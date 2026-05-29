@@ -10,14 +10,19 @@
   "vote_seconds": 20,
   "chat_slowmode_seconds": 3,
   "reveal_death_roles": false,
+  "reveal_public_police_status": true,
+  "reveal_morning_mafia_count": true,
   "citizen_special_count": 0,
   "mafia_special_count": 0,
   "neutral_special_count": 1,
   "enable_detective": true,
   "enable_graverobber": true,
   "enable_spy": true,
+  "enable_contractor": true,
   "enable_godfather": true,
   "enable_joker": true,
   "enable_politician": true,
-  "enable_terrorist": true
+  "enable_terrorist": true,
+  "enable_shaman": true,
+  "enable_soldier": true
 }

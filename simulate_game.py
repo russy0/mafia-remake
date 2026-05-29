@@ -179,6 +179,429 @@ def main() -> None:
     spy_night = spy_game.resolve_night()
     assert spy_night.spy_contacts == [spy.user_id]
 
+    hidden_spy_game = MafiaGame(
+        [(index, f"HiddenSpyGame{index}") for index in range(1, 6)],
+        mafia_count=1,
+        doctor_count=0,
+        police_count=0,
+        special_roles=[Role.SPY],
+        rng=random.Random(46),
+    )
+    hidden_spy_mafia = next(player for player in hidden_spy_game.players if player.role == Role.MAFIA)
+    hidden_spy = next(player for player in hidden_spy_game.players if player.role == Role.SPY)
+    hidden_spy_game.submit_night_action(hidden_spy_mafia.user_id, hidden_spy.user_id)
+    hidden_spy_result = hidden_spy_game.resolve_night()
+    assert hidden_spy_result.killed is not None
+    assert hidden_spy_result.killed.user_id == hidden_spy.user_id
+
+    contacted_spy_game = MafiaGame(
+        [(index, f"ContactedSpyGame{index}") for index in range(1, 6)],
+        mafia_count=1,
+        doctor_count=0,
+        police_count=0,
+        special_roles=[Role.SPY],
+        rng=random.Random(48),
+    )
+    contacted_mafia = next(player for player in contacted_spy_game.players if player.role == Role.MAFIA)
+    contacted_spy = next(player for player in contacted_spy_game.players if player.role == Role.SPY)
+    contacted_spy_game.spy_contacted.add(contacted_spy.user_id)
+    try:
+        contacted_spy_game.submit_night_action(contacted_mafia.user_id, contacted_spy.user_id)
+    except ValueError as error:
+        assert "접선된 마피아 팀" in str(error)
+    else:
+        raise AssertionError("Mafia attacked a contacted spy")
+
+    hidden_godfather_game = MafiaGame(
+        [(index, f"HiddenGodfatherGame{index}") for index in range(1, 6)],
+        mafia_count=1,
+        doctor_count=0,
+        police_count=0,
+        special_roles=[Role.GODFATHER],
+        rng=random.Random(49),
+    )
+    hidden_godfather_mafia = next(
+        player for player in hidden_godfather_game.players if player.role == Role.MAFIA
+    )
+    hidden_godfather = next(
+        player for player in hidden_godfather_game.players if player.role == Role.GODFATHER
+    )
+    hidden_godfather_game.submit_night_action(hidden_godfather_mafia.user_id, hidden_godfather.user_id)
+    hidden_godfather_result = hidden_godfather_game.resolve_night()
+    assert hidden_godfather_result.killed is not None
+    assert hidden_godfather_result.killed.user_id == hidden_godfather.user_id
+
+    police_hidden_spy_game = MafiaGame(
+        [(index, f"PoliceHiddenSpyGame{index}") for index in range(1, 6)],
+        mafia_count=1,
+        doctor_count=0,
+        police_count=1,
+        special_roles=[Role.SPY],
+        rng=random.Random(52),
+    )
+    police_hidden_spy_police = next(
+        player for player in police_hidden_spy_game.players if player.role == Role.POLICE
+    )
+    police_hidden_spy = next(player for player in police_hidden_spy_game.players if player.role == Role.SPY)
+    police_hidden_spy_game.submit_night_action(
+        police_hidden_spy_police.user_id,
+        police_hidden_spy.user_id,
+    )
+    police_hidden_spy_result = police_hidden_spy_game.resolve_night()
+    assert police_hidden_spy_result.police_target_is_mafia is False
+
+    police_contacted_spy_game = MafiaGame(
+        [(index, f"PoliceContactedSpyGame{index}") for index in range(1, 6)],
+        mafia_count=1,
+        doctor_count=0,
+        police_count=1,
+        special_roles=[Role.SPY],
+        rng=random.Random(53),
+    )
+    police_contacted_spy_police = next(
+        player for player in police_contacted_spy_game.players if player.role == Role.POLICE
+    )
+    police_contacted_spy = next(
+        player for player in police_contacted_spy_game.players if player.role == Role.SPY
+    )
+    police_contacted_spy_game.spy_contacted.add(police_contacted_spy.user_id)
+    police_contacted_spy_game.submit_night_action(
+        police_contacted_spy_police.user_id,
+        police_contacted_spy.user_id,
+    )
+    police_contacted_spy_result = police_contacted_spy_game.resolve_night()
+    assert police_contacted_spy_result.police_target_is_mafia is True
+
+    police_hidden_godfather_game = MafiaGame(
+        [(index, f"PoliceHiddenGodfatherGame{index}") for index in range(1, 6)],
+        mafia_count=1,
+        doctor_count=0,
+        police_count=1,
+        special_roles=[Role.GODFATHER],
+        rng=random.Random(54),
+    )
+    police_hidden_godfather_police = next(
+        player for player in police_hidden_godfather_game.players if player.role == Role.POLICE
+    )
+    police_hidden_godfather = next(
+        player for player in police_hidden_godfather_game.players if player.role == Role.GODFATHER
+    )
+    police_hidden_godfather_game.submit_night_action(
+        police_hidden_godfather_police.user_id,
+        police_hidden_godfather.user_id,
+    )
+    police_hidden_godfather_result = police_hidden_godfather_game.resolve_night()
+    assert police_hidden_godfather_result.police_target_is_mafia is False
+
+    police_contacted_godfather_game = MafiaGame(
+        [(index, f"PoliceContactedGodfatherGame{index}") for index in range(1, 6)],
+        mafia_count=1,
+        doctor_count=0,
+        police_count=1,
+        special_roles=[Role.GODFATHER],
+        rng=random.Random(55),
+    )
+    police_contacted_godfather_police = next(
+        player for player in police_contacted_godfather_game.players if player.role == Role.POLICE
+    )
+    police_contacted_godfather = next(
+        player for player in police_contacted_godfather_game.players if player.role == Role.GODFATHER
+    )
+    police_contacted_godfather_game.godfather_contacted.add(police_contacted_godfather.user_id)
+    police_contacted_godfather_game.submit_night_action(
+        police_contacted_godfather_police.user_id,
+        police_contacted_godfather.user_id,
+    )
+    police_contacted_godfather_result = police_contacted_godfather_game.resolve_night()
+    assert police_contacted_godfather_result.police_target_is_mafia is True
+
+    uncontacted_spy_end_game = MafiaGame(
+        [(index, f"UncontactedSpyEndGame{index}") for index in range(1, 6)],
+        mafia_count=1,
+        doctor_count=0,
+        police_count=0,
+        special_roles=[Role.SPY],
+        rng=random.Random(56),
+    )
+    uncontacted_spy_mafia = next(
+        player for player in uncontacted_spy_end_game.players if player.role == Role.MAFIA
+    )
+    uncontacted_spy = next(player for player in uncontacted_spy_end_game.players if player.role == Role.SPY)
+    uncontacted_spy_mafia.alive = False
+    assert uncontacted_spy.alive
+    assert len(uncontacted_spy_end_game.alive_mafia_team()) == 1
+    assert len(uncontacted_spy_end_game.alive_known_mafia_team()) == 0
+    assert uncontacted_spy_end_game.winner() == Winner.CITIZEN
+
+    contacted_spy_count_game = MafiaGame(
+        [(index, f"ContactedSpyCountGame{index}") for index in range(1, 6)],
+        mafia_count=1,
+        doctor_count=0,
+        police_count=0,
+        special_roles=[Role.SPY],
+        rng=random.Random(57),
+    )
+    contacted_count_mafia = next(
+        player for player in contacted_spy_count_game.players if player.role == Role.MAFIA
+    )
+    contacted_count_spy = next(
+        player for player in contacted_spy_count_game.players if player.role == Role.SPY
+    )
+    contacted_spy_count_game.spy_contacted.add(contacted_count_spy.user_id)
+    contacted_count_mafia.alive = False
+    assert len(contacted_spy_count_game.alive_known_mafia_team()) == 1
+    assert contacted_spy_count_game.winner() is None
+
+    uncontacted_godfather_end_game = MafiaGame(
+        [(index, f"UncontactedGodfatherEndGame{index}") for index in range(1, 6)],
+        mafia_count=1,
+        doctor_count=0,
+        police_count=0,
+        special_roles=[Role.GODFATHER],
+        rng=random.Random(58),
+    )
+    uncontacted_godfather_mafia = next(
+        player for player in uncontacted_godfather_end_game.players if player.role == Role.MAFIA
+    )
+    uncontacted_godfather = next(
+        player for player in uncontacted_godfather_end_game.players if player.role == Role.GODFATHER
+    )
+    uncontacted_godfather_mafia.alive = False
+    assert uncontacted_godfather.alive
+    assert len(uncontacted_godfather_end_game.alive_mafia_team()) == 1
+    assert len(uncontacted_godfather_end_game.alive_known_mafia_team()) == 0
+    assert uncontacted_godfather_end_game.winner() == Winner.CITIZEN
+
+    contacted_godfather_count_game = MafiaGame(
+        [(index, f"ContactedGodfatherCountGame{index}") for index in range(1, 6)],
+        mafia_count=1,
+        doctor_count=0,
+        police_count=0,
+        special_roles=[Role.GODFATHER],
+        rng=random.Random(59),
+    )
+    contacted_count_godfather_mafia = next(
+        player for player in contacted_godfather_count_game.players if player.role == Role.MAFIA
+    )
+    contacted_count_godfather = next(
+        player for player in contacted_godfather_count_game.players if player.role == Role.GODFATHER
+    )
+    contacted_godfather_count_game.godfather_contacted.add(contacted_count_godfather.user_id)
+    contacted_count_godfather_mafia.alive = False
+    assert len(contacted_godfather_count_game.alive_known_mafia_team()) == 1
+    assert contacted_godfather_count_game.winner() is None
+
+    contractor_contact_game = MafiaGame(
+        [(index, f"ContractorContactGame{index}") for index in range(1, 6)],
+        mafia_count=1,
+        doctor_count=0,
+        police_count=0,
+        special_roles=[Role.CONTRACTOR],
+        rng=random.Random(67),
+    )
+    contractor = next(player for player in contractor_contact_game.players if player.role == Role.CONTRACTOR)
+    contractor_mafia = next(player for player in contractor_contact_game.players if player.role == Role.MAFIA)
+    contractor_contact_result = contractor_contact_game.submit_contractor_contact(
+        contractor.user_id,
+        contractor_mafia.user_id,
+    )
+    assert "[동업]" in contractor_contact_result
+    assert contractor.user_id in contractor_contact_game.contractor_contacted
+    contractor_contact_night = contractor_contact_game.resolve_night()
+    assert contractor_contact_night.contractor_contacts == [contractor.user_id]
+
+    contractor_police_game = MafiaGame(
+        [(index, f"ContractorPoliceGame{index}") for index in range(1, 6)],
+        mafia_count=1,
+        doctor_count=0,
+        police_count=1,
+        special_roles=[Role.CONTRACTOR],
+        rng=random.Random(68),
+    )
+    contractor_police = next(player for player in contractor_police_game.players if player.role == Role.POLICE)
+    hidden_contractor = next(
+        player for player in contractor_police_game.players if player.role == Role.CONTRACTOR
+    )
+    contractor_police_game.submit_night_action(
+        contractor_police.user_id,
+        hidden_contractor.user_id,
+    )
+    contractor_police_result = contractor_police_game.resolve_night()
+    assert contractor_police_result.police_target_is_mafia is False
+
+    contractor_success_game = MafiaGame(
+        [(index, f"ContractorSuccessGame{index}") for index in range(1, 8)],
+        mafia_count=1,
+        doctor_count=1,
+        police_count=1,
+        special_roles=[Role.CONTRACTOR],
+        rng=random.Random(69),
+    )
+    success_contractor = next(
+        player for player in contractor_success_game.players if player.role == Role.CONTRACTOR
+    )
+    success_doctor = next(player for player in contractor_success_game.players if player.role == Role.DOCTOR)
+    success_police = next(player for player in contractor_success_game.players if player.role == Role.POLICE)
+    contractor_success_game.day_number = 2
+    contractor_success_game.submit_contractor_contract(
+        success_contractor.user_id,
+        success_doctor.user_id,
+        Role.DOCTOR,
+        success_police.user_id,
+        Role.POLICE,
+    )
+    contractor_success_result = contractor_success_game.resolve_night()
+    assert {player.user_id for player in contractor_success_result.contractor_kills} == {
+        success_doctor.user_id,
+        success_police.user_id,
+    }
+    assert not success_doctor.alive
+    assert not success_police.alive
+
+    contractor_fail_game = MafiaGame(
+        [(index, f"ContractorFailGame{index}") for index in range(1, 8)],
+        mafia_count=1,
+        doctor_count=1,
+        police_count=1,
+        special_roles=[Role.CONTRACTOR],
+        rng=random.Random(70),
+    )
+    fail_contractor = next(
+        player for player in contractor_fail_game.players if player.role == Role.CONTRACTOR
+    )
+    fail_doctor = next(player for player in contractor_fail_game.players if player.role == Role.DOCTOR)
+    fail_police = next(player for player in contractor_fail_game.players if player.role == Role.POLICE)
+    contractor_fail_game.day_number = 2
+    contractor_fail_game.submit_contractor_contract(
+        fail_contractor.user_id,
+        fail_doctor.user_id,
+        Role.DOCTOR,
+        fail_police.user_id,
+        Role.DOCTOR,
+    )
+    contractor_fail_result = contractor_fail_game.resolve_night()
+    assert contractor_fail_result.contractor_kills == []
+    assert "암살에 실패" in contractor_fail_result.contractor_results[fail_contractor.user_id]
+    assert fail_doctor.alive
+    assert fail_police.alive
+
+    contractor_revealed_game = MafiaGame(
+        [(index, f"ContractorRevealedGame{index}") for index in range(1, 8)],
+        mafia_count=1,
+        doctor_count=1,
+        police_count=1,
+        special_roles=[Role.CONTRACTOR],
+        rng=random.Random(71),
+    )
+    revealed_contractor = next(
+        player for player in contractor_revealed_game.players if player.role == Role.CONTRACTOR
+    )
+    revealed_doctor = next(player for player in contractor_revealed_game.players if player.role == Role.DOCTOR)
+    revealed_police = next(player for player in contractor_revealed_game.players if player.role == Role.POLICE)
+    contractor_revealed_game.day_number = 2
+    contractor_revealed_game.publicly_revealed_ids.add(revealed_doctor.user_id)
+    try:
+        contractor_revealed_game.submit_contractor_contract(
+            revealed_contractor.user_id,
+            revealed_doctor.user_id,
+            Role.DOCTOR,
+            revealed_police.user_id,
+            Role.POLICE,
+        )
+    except ValueError as error:
+        assert "공개적으로 드러난" in str(error)
+    else:
+        raise AssertionError("Contractor targeted a publicly revealed player")
+
+    soldier_game = MafiaGame(
+        [(index, f"SoldierGame{index}") for index in range(1, 6)],
+        mafia_count=1,
+        doctor_count=0,
+        police_count=0,
+        special_roles=[Role.SOLDIER],
+        rng=random.Random(60),
+    )
+    soldier_mafia = next(player for player in soldier_game.players if player.role == Role.MAFIA)
+    soldier = next(player for player in soldier_game.players if player.role == Role.SOLDIER)
+    soldier_game.submit_night_action(soldier_mafia.user_id, soldier.user_id)
+    soldier_first_result = soldier_game.resolve_night()
+    assert soldier.alive
+    assert soldier_first_result.killed is None
+    assert soldier_first_result.soldier_blocks == [soldier]
+    assert soldier.user_id in soldier_game.soldier_bulletproof_used
+
+    soldier_game.start_vote()
+    for voter in soldier_game.alive_players():
+        soldier_game.submit_day_vote(voter.user_id, None)
+    soldier_game.resolve_vote()
+    soldier_game.submit_night_action(soldier_mafia.user_id, soldier.user_id)
+    soldier_second_result = soldier_game.resolve_night()
+    assert not soldier.alive
+    assert soldier_second_result.killed is not None
+    assert soldier_second_result.killed.user_id == soldier.user_id
+    assert soldier_second_result.soldier_blocks == []
+
+    protected_soldier_game = MafiaGame(
+        [(index, f"ProtectedSoldierGame{index}") for index in range(1, 6)],
+        mafia_count=1,
+        doctor_count=1,
+        police_count=0,
+        special_roles=[Role.SOLDIER],
+        rng=random.Random(62),
+    )
+    protected_soldier_mafia = next(
+        player for player in protected_soldier_game.players if player.role == Role.MAFIA
+    )
+    protected_soldier_doctor = next(
+        player for player in protected_soldier_game.players if player.role == Role.DOCTOR
+    )
+    protected_soldier = next(
+        player for player in protected_soldier_game.players if player.role == Role.SOLDIER
+    )
+    protected_soldier_game.submit_night_action(
+        protected_soldier_mafia.user_id,
+        protected_soldier.user_id,
+    )
+    protected_soldier_game.submit_night_action(
+        protected_soldier_doctor.user_id,
+        protected_soldier.user_id,
+    )
+    protected_soldier_result = protected_soldier_game.resolve_night()
+    assert protected_soldier.alive
+    assert protected_soldier_result.killed is None
+    assert protected_soldier_result.soldier_blocks == []
+    assert protected_soldier.user_id not in protected_soldier_game.soldier_bulletproof_used
+
+    shaman_game = MafiaGame(
+        [(index, f"ShamanGame{index}") for index in range(1, 6)],
+        mafia_count=1,
+        doctor_count=0,
+        police_count=0,
+        special_roles=[Role.SHAMAN],
+        rng=random.Random(63),
+    )
+    shaman_mafia = next(player for player in shaman_game.players if player.role == Role.MAFIA)
+    shaman = next(player for player in shaman_game.players if player.role == Role.SHAMAN)
+    shaman_victim = next(player for player in shaman_game.players if player.role == Role.CITIZEN)
+    assert shaman not in shaman_game.night_action_actors()
+    shaman_game.submit_night_action(shaman_mafia.user_id, shaman_victim.user_id)
+    shaman_first_night = shaman_game.resolve_night()
+    assert shaman_first_night.killed is not None
+    assert shaman_first_night.killed.user_id == shaman_victim.user_id
+
+    shaman_game.start_vote()
+    for voter in shaman_game.alive_players():
+        shaman_game.submit_day_vote(voter.user_id, None)
+    shaman_game.resolve_vote()
+    assert shaman in shaman_game.night_action_actors()
+    shaman_result = shaman_game.submit_night_action(shaman.user_id, shaman_victim.user_id)
+    assert "성불 대상" in shaman_result
+    shaman_second_night = shaman_game.resolve_night()
+    assert shaman_second_night.shaman_purifications == [shaman_victim.user_id]
+    assert shaman_victim.user_id in shaman_game.purified_dead_ids
+    assert shaman.user_id in shaman_second_night.shaman_results
+    assert shaman_victim.role.value in shaman_second_night.shaman_results[shaman.user_id]
+
     graverobber_game = MafiaGame(
         [(index, f"GraverobberGame{index}") for index in range(1, 6)],
         mafia_count=1,
