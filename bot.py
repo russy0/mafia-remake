@@ -1,11 +1,14 @@
 from __future__ import annotations
 
 import asyncio
+from contextlib import suppress
 from dataclasses import dataclass, field
+import hashlib
 import json
 import os
 from pathlib import Path
 from typing import Literal
+from urllib.parse import quote_plus
 
 import discord
 from discord import app_commands
@@ -40,12 +43,22 @@ class BotConfig:
     enable_graverobber: bool = True
     enable_spy: bool = True
     enable_contractor: bool = True
+    enable_witch: bool = True
+    enable_scientist: bool = True
     enable_godfather: bool = True
     enable_joker: bool = True
     enable_politician: bool = True
+    enable_judge: bool = True
+    enable_reporter: bool = True
+    enable_hacker: bool = True
     enable_terrorist: bool = True
     enable_shaman: bool = True
     enable_soldier: bool = True
+    enable_nurse: bool = True
+    enable_cult_team: bool = False
+    use_agent: bool = False
+    use_vigilante: bool = False
+    anonymous_mode: bool = False
 
 
 @dataclass
@@ -64,9 +77,28 @@ class RunningGame:
     game_channel_overwrites: dict[int, discord.PermissionOverwrite | None] = field(default_factory=dict)
     member_channel_overwrites: dict[int, discord.PermissionOverwrite | None] = field(default_factory=dict)
     original_slowmode_delay: int | None = None
+    original_slowmode_channel_id: int | None = None
     participant_user_ids: set[int] = field(default_factory=set)
     private_channel_ids: dict[Role, int] = field(default_factory=dict)
+    game_status_message_id: int | None = None
     dead_channel_id: int | None = None
+    dead_status_message_id: int | None = None
+    frog_channel_id: int | None = None
+    frog_game_channel_overwrites: dict[int, discord.PermissionOverwrite | None] = field(default_factory=dict)
+    night_timed_events_due: bool = False
+    anonymous_enabled: bool = False
+    anonymous_public_channel_id: int | None = None
+    anonymous_input_channel_ids: dict[int, int] = field(default_factory=dict)
+    anonymous_input_channel_owners: dict[int, int] = field(default_factory=dict)
+    anonymous_role_input_channel_ids: dict[tuple[int, Role], int] = field(default_factory=dict)
+    anonymous_role_input_channels: dict[int, tuple[int, Role]] = field(default_factory=dict)
+    anonymous_role_status_message_ids: dict[Role, int] = field(default_factory=dict)
+    anonymous_role_input_status_message_ids: dict[tuple[int, Role], int] = field(default_factory=dict)
+    anonymous_aliases: dict[int, str] = field(default_factory=dict)
+    anonymous_original_names: dict[int, str] = field(default_factory=dict)
+    anonymous_webhook_urls: dict[int, str] = field(default_factory=dict)
+    anonymous_original_channel_overwrites: dict[int, discord.PermissionOverwrite | None] = field(default_factory=dict)
+    final_defense_user_id: int | None = None
 
 
 RECRUITMENT_SECONDS = 60
@@ -75,11 +107,23 @@ DISCUSSION_EXTENSION_SECONDS = 60
 GAME_NOTIFICATION_ROLE = "게임알림"
 DEAD_PLAYER_ROLE = "사망자"
 DEAD_CHAT_CHANNEL_NAME = "사망자-채팅방"
-PRIVATE_CHAT_ROLES = (Role.MAFIA, Role.POLICE, Role.DOCTOR)
+FROG_CHAT_CHANNEL_NAME = "개구리-채팅방"
+ANONYMOUS_PUBLIC_CHANNEL_NAME = "익명-전체채팅"
+PRIVATE_CHAT_ROLES = (
+    Role.MAFIA,
+    Role.POLICE,
+    Role.AGENT,
+    Role.VIGILANTE,
+    Role.DOCTOR,
+    Role.CULT_LEADER,
+)
 PRIVATE_CHANNEL_NAMES = {
     Role.MAFIA: "마피아-비밀방",
     Role.POLICE: "경찰-비밀방",
+    Role.AGENT: "요원-비밀방",
+    Role.VIGILANTE: "자경단원-비밀방",
     Role.DOCTOR: "의사-비밀방",
+    Role.CULT_LEADER: "교주-비밀방",
 }
 BASE_ROLE_ORDER = (Role.MAFIA, Role.DOCTOR, Role.POLICE)
 CITIZEN_SPECIAL_ROLES = (
@@ -87,30 +131,48 @@ CITIZEN_SPECIAL_ROLES = (
     Role.SHAMAN,
     Role.GRAVEROBBER,
     Role.POLITICIAN,
+    Role.JUDGE,
+    Role.REPORTER,
+    Role.HACKER,
     Role.TERRORIST,
     Role.SOLDIER,
+    Role.NURSE,
 )
-MAFIA_SPECIAL_ROLES = (Role.SPY, Role.CONTRACTOR, Role.GODFATHER)
+MAFIA_SPECIAL_ROLES = (Role.SPY, Role.CONTRACTOR, Role.WITCH, Role.SCIENTIST, Role.GODFATHER)
 NEUTRAL_SPECIAL_ROLES = (Role.JOKER,)
-PUBLIC_MAFIA_SPECIAL_ROLES = (Role.SPY, Role.CONTRACTOR, Role.GODFATHER)
+PUBLIC_MAFIA_SPECIAL_ROLES = (Role.SPY, Role.CONTRACTOR, Role.WITCH, Role.SCIENTIST, Role.GODFATHER)
 PUBLIC_CITIZEN_SPECIAL_ROLES = (
     Role.DETECTIVE,
     Role.SHAMAN,
     Role.GRAVEROBBER,
     Role.POLITICIAN,
+    Role.JUDGE,
+    Role.REPORTER,
+    Role.HACKER,
     Role.TERRORIST,
     Role.SOLDIER,
+    Role.NURSE,
+    Role.FANATIC,
 )
 PUBLIC_NEUTRAL_SPECIAL_ROLES = (Role.JOKER,)
+PUBLIC_CULT_SPECIAL_ROLES = (Role.CULT_LEADER,)
+INVESTIGATION_ROLES = (Role.POLICE, Role.AGENT, Role.VIGILANTE)
 CONTRACTOR_GUESS_ROLES = (
     Role.DOCTOR,
-    Role.POLICE,
+    Role.WITCH,
+    Role.SCIENTIST,
     Role.DETECTIVE,
     Role.SHAMAN,
     Role.GRAVEROBBER,
     Role.POLITICIAN,
+    Role.JUDGE,
+    Role.REPORTER,
+    Role.HACKER,
     Role.TERRORIST,
     Role.SOLDIER,
+    Role.NURSE,
+    Role.CULT_LEADER,
+    Role.FANATIC,
     Role.JOKER,
     Role.CITIZEN,
 )
@@ -119,6 +181,42 @@ ERROR_EMBED_COLOR = discord.Color.red()
 SUCCESS_EMBED_COLOR = discord.Color.green()
 WARNING_EMBED_COLOR = discord.Color.orange()
 DayDiscussionResult = Literal["vote", "stop"]
+
+ANIMAL_ALIASES = (
+    "사자", "호랑이", "표범", "치타", "늑대", "여우", "곰", "판다", "코알라", "캥거루",
+    "토끼", "다람쥐", "고슴도치", "수달", "비버", "너구리", "오소리", "몽구스", "족제비", "스컹크",
+    "사슴", "고라니", "순록", "무스", "말", "얼룩말", "기린", "코끼리", "코뿔소", "하마",
+    "낙타", "라마", "알파카", "염소", "양", "소", "물소", "돼지", "멧돼지", "개",
+    "고양이", "햄스터", "기니피그", "쥐", "친칠라", "원숭이", "고릴라", "침팬지", "오랑우탄", "나무늘보",
+    "박쥐", "돌고래", "고래", "범고래", "상어", "가오리", "해마", "문어", "오징어", "해파리",
+    "펭귄", "독수리", "매", "올빼미", "까마귀", "비둘기", "참새", "앵무새", "공작", "두루미",
+    "백조", "오리", "거위", "닭", "칠면조", "타조", "플라밍고", "펠리컨", "갈매기", "키위",
+    "거북이", "악어", "도마뱀", "카멜레온", "이구아나", "뱀", "두꺼비", "도롱뇽", "도마뱀붙이",
+    "나비", "벌", "개미", "잠자리", "무당벌레", "사마귀", "장수풍뎅이", "달팽이", "거미", "전갈",
+)
+
+ANIMAL_IMAGE_TERMS = {
+    "사자": "lion", "호랑이": "tiger", "표범": "leopard", "치타": "cheetah", "늑대": "wolf",
+    "여우": "fox", "곰": "bear", "판다": "panda", "코알라": "koala", "캥거루": "kangaroo",
+    "토끼": "rabbit", "다람쥐": "squirrel", "고슴도치": "hedgehog", "수달": "otter", "비버": "beaver",
+    "너구리": "raccoon", "오소리": "badger", "몽구스": "mongoose", "족제비": "weasel", "스컹크": "skunk",
+    "사슴": "deer", "고라니": "water deer", "순록": "reindeer", "무스": "moose", "말": "horse",
+    "얼룩말": "zebra", "기린": "giraffe", "코끼리": "elephant", "코뿔소": "rhinoceros", "하마": "hippopotamus",
+    "낙타": "camel", "라마": "llama", "알파카": "alpaca", "염소": "goat", "양": "sheep",
+    "소": "cow", "물소": "buffalo", "돼지": "pig", "멧돼지": "boar", "개": "dog",
+    "고양이": "cat", "햄스터": "hamster", "기니피그": "guinea pig", "쥐": "mouse", "친칠라": "chinchilla",
+    "원숭이": "monkey", "고릴라": "gorilla", "침팬지": "chimpanzee", "오랑우탄": "orangutan", "나무늘보": "sloth",
+    "박쥐": "bat", "돌고래": "dolphin", "고래": "whale", "범고래": "orca", "상어": "shark",
+    "가오리": "stingray", "해마": "seahorse", "문어": "octopus", "오징어": "squid", "해파리": "jellyfish",
+    "펭귄": "penguin", "독수리": "eagle", "매": "falcon", "올빼미": "owl", "까마귀": "crow",
+    "비둘기": "dove", "참새": "sparrow", "앵무새": "parrot", "공작": "peacock", "두루미": "crane",
+    "백조": "swan", "오리": "duck", "거위": "goose", "닭": "chicken", "칠면조": "turkey",
+    "타조": "ostrich", "플라밍고": "flamingo", "펠리컨": "pelican", "갈매기": "seagull", "키위": "kiwi bird",
+    "거북이": "turtle", "악어": "crocodile", "도마뱀": "lizard", "카멜레온": "chameleon", "이구아나": "iguana",
+    "뱀": "snake", "개구리": "frog", "두꺼비": "toad", "도롱뇽": "salamander", "도마뱀붙이": "gecko",
+    "나비": "butterfly", "벌": "bee", "개미": "ant", "잠자리": "dragonfly", "무당벌레": "ladybug",
+    "사마귀": "mantis", "장수풍뎅이": "beetle", "달팽이": "snail", "거미": "spider", "전갈": "scorpion",
+}
 
 
 def load_config() -> BotConfig:
@@ -145,18 +243,33 @@ def load_config() -> BotConfig:
         enable_graverobber=bool(data.get("enable_graverobber", True)),
         enable_spy=bool(data.get("enable_spy", True)),
         enable_contractor=bool(data.get("enable_contractor", True)),
+        enable_witch=bool(data.get("enable_witch", True)),
+        enable_scientist=bool(data.get("enable_scientist", True)),
         enable_godfather=bool(data.get("enable_godfather", True)),
         enable_joker=bool(data.get("enable_joker", True)),
         enable_politician=bool(data.get("enable_politician", True)),
+        enable_judge=bool(data.get("enable_judge", True)),
+        enable_reporter=bool(data.get("enable_reporter", True)),
+        enable_hacker=bool(data.get("enable_hacker", True)),
         enable_terrorist=bool(data.get("enable_terrorist", True)),
         enable_shaman=bool(data.get("enable_shaman", True)),
         enable_soldier=bool(data.get("enable_soldier", True)),
+        enable_nurse=bool(data.get("enable_nurse", True)),
+        enable_cult_team=bool(data.get("enable_cult_team", False)),
+        use_agent=bool(data.get("use_agent", False)),
+        use_vigilante=bool(data.get("use_vigilante", False)),
+        anonymous_mode=bool(data.get("anonymous_mode", False)),
     )
 
 
 config = load_config()
 games: dict[int, RunningGame] = {}
 recruiting_guilds: set[int] = set()
+
+
+def reload_config() -> None:
+    global config
+    config = load_config()
 
 
 def save_config() -> None:
@@ -194,6 +307,8 @@ def special_role_rule_text(role: Role) -> str:
         Role.MAFIA: "공격",
         Role.DOCTOR: "보호",
         Role.POLICE: "조사",
+        Role.AGENT: "공작",
+        Role.VIGILANTE: "숙청",
     }.get(role, "행동")
     return (
         f"{role.value}가 여러 명이면 같은 대상이 살아있는 {role.value} 인원의 "
@@ -217,13 +332,18 @@ def selected_role_counts(
             "접선 전 특수 마피아만으로는 게임을 진행할 수 없습니다. "
             "일반 마피아가 최소 1명 필요합니다."
         )
+    investigation_role = random_investigation_role()
     role_counts = {
         Role.MAFIA: config.default_mafia_count - mafia_special_count,
         Role.DOCTOR: config.default_doctor_count,
-        Role.POLICE: config.default_police_count,
     }
+    if config.default_police_count > 0:
+        role_counts[investigation_role] = config.default_police_count
     for role in selected_special_roles:
         role_counts[role] = role_counts.get(role, 0) + 1
+    if config.enable_cult_team:
+        role_counts[Role.CULT_LEADER] = role_counts.get(Role.CULT_LEADER, 0) + 1
+        role_counts[Role.FANATIC] = role_counts.get(Role.FANATIC, 0) + 1
     return role_counts
 
 
@@ -234,11 +354,17 @@ def enabled_special_roles(pool: tuple[Role, ...]) -> list[Role]:
         Role.GRAVEROBBER: config.enable_graverobber,
         Role.SPY: config.enable_spy,
         Role.CONTRACTOR: config.enable_contractor,
+        Role.WITCH: config.enable_witch,
+        Role.SCIENTIST: config.enable_scientist,
         Role.GODFATHER: config.enable_godfather,
         Role.JOKER: config.enable_joker,
         Role.POLITICIAN: config.enable_politician,
+        Role.JUDGE: config.enable_judge,
+        Role.REPORTER: config.enable_reporter,
+        Role.HACKER: config.enable_hacker,
         Role.TERRORIST: config.enable_terrorist,
         Role.SOLDIER: config.enable_soldier,
+        Role.NURSE: config.enable_nurse,
     }
     return [role for role in pool if enabled[role]]
 
@@ -262,7 +388,22 @@ def choose_special_roles() -> list[Role]:
 def random_sample_roles(candidates: list[Role], count: int) -> list[Role]:
     import random
 
-    return random.sample(candidates, count) if count > 0 else []
+    return random.SystemRandom().sample(candidates, count) if count > 0 else []
+
+
+def investigation_role_candidates() -> list[Role]:
+    candidates = [Role.POLICE]
+    if config.use_agent:
+        candidates.append(Role.AGENT)
+    if config.use_vigilante:
+        candidates.append(Role.VIGILANTE)
+    return candidates
+
+
+def random_investigation_role() -> Role:
+    import random
+
+    return random.SystemRandom().choice(investigation_role_candidates())
 
 
 def minimum_player_count(role_counts: dict[Role, int]) -> int:
@@ -281,15 +422,25 @@ def ordered_role_counts(role_counts: dict[Role, int]) -> list[tuple[Role, int]]:
         Role.MAFIA,
         Role.SPY,
         Role.CONTRACTOR,
+        Role.WITCH,
+        Role.SCIENTIST,
         Role.GODFATHER,
         Role.DOCTOR,
         Role.POLICE,
+        Role.AGENT,
+        Role.VIGILANTE,
         Role.DETECTIVE,
         Role.SHAMAN,
         Role.GRAVEROBBER,
         Role.POLITICIAN,
+        Role.JUDGE,
+        Role.REPORTER,
+        Role.HACKER,
         Role.TERRORIST,
         Role.SOLDIER,
+        Role.NURSE,
+        Role.CULT_LEADER,
+        Role.FANATIC,
         Role.JOKER,
     )
     return [(role, role_counts.get(role, 0)) for role in order if role_counts.get(role, 0) > 0]
@@ -297,6 +448,10 @@ def ordered_role_counts(role_counts: dict[Role, int]) -> list[tuple[Role, int]]:
 
 def count_role_group(role_counts: dict[Role, int], roles: tuple[Role, ...]) -> int:
     return sum(role_counts.get(role, 0) for role in roles)
+
+
+def investigation_candidates_text() -> str:
+    return ", ".join(role.value for role in investigation_role_candidates())
 
 
 def public_role_count_text_from_counts(
@@ -307,23 +462,40 @@ def public_role_count_text_from_counts(
     mafia_total = role_counts.get(Role.MAFIA, 0) + mafia_special
     doctor_total = role_counts.get(Role.DOCTOR, 0)
     police_total = role_counts.get(Role.POLICE, 0)
+    agent_total = role_counts.get(Role.AGENT, 0)
+    vigilante_total = role_counts.get(Role.VIGILANTE, 0)
     citizen_special = count_role_group(role_counts, PUBLIC_CITIZEN_SPECIAL_ROLES)
     neutral_special = count_role_group(role_counts, PUBLIC_NEUTRAL_SPECIAL_ROLES)
+    cult_total = count_role_group(role_counts, PUBLIC_CULT_SPECIAL_ROLES)
 
     if total_players is None:
         citizen_text = f"시민 변동(중 특수 {citizen_special}명)"
     else:
-        citizen_total = max(0, total_players - mafia_total - doctor_total - police_total - neutral_special)
+        citizen_total = max(
+            0,
+            total_players
+            - mafia_total
+            - doctor_total
+            - police_total
+            - agent_total
+            - vigilante_total
+            - neutral_special
+            - cult_total,
+        )
         citizen_text = f"시민 {citizen_total}명(중 특수 {citizen_special}명)"
 
+    investigation_total = police_total + agent_total + vigilante_total
+    investigation_text = f"수사직 {investigation_total}명"
     parts = [
         f"마피아 {mafia_total}명(중 특수 {mafia_special}명)",
         f"의사 {doctor_total}명",
-        f"경찰 {police_total}명",
+        investigation_text,
         citizen_text,
     ]
     if neutral_special > 0:
         parts.append(f"중립 특수 {neutral_special}명")
+    if cult_total > 0:
+        parts.append(f"교주팀 {cult_total}명")
     return ", ".join(parts)
 
 
@@ -338,10 +510,12 @@ def public_game_settings_text(game: MafiaGame, prefix: str = "게임 방 설정�
     return (
         f"{prefix}\n"
         f"{public_role_count_text(game)}\n"
+        f"교주팀: {'켜짐 - 교주 1명, 광신도 1명 필수 배정' if config.enable_cult_team else '꺼짐'}\n"
         f"사망 시 직업 공개: {'공개' if config.reveal_death_roles else '비공개'}\n"
         f"경찰 조사 성공 여부 공개: {'공개' if config.reveal_public_police_status else '비공개'}\n"
         f"아침 생존 마피아 수 공개: {'공개' if config.reveal_morning_mafia_count else '비공개'}\n"
-        f"채팅 슬로우모드: {config.chat_slowmode_seconds}초"
+        f"채팅 슬로우모드: {config.chat_slowmode_seconds}초\n"
+        f"익명 채팅: {'켜짐' if config.anonymous_mode else '꺼짐'}"
     )
 
 
@@ -354,11 +528,19 @@ def current_settings_text(prefix: str = "마피아 설정을 저장했습니다.
             Role.GRAVEROBBER,
             Role.SPY,
             Role.CONTRACTOR,
+            Role.WITCH,
+            Role.SCIENTIST,
             Role.GODFATHER,
             Role.JOKER,
             Role.POLITICIAN,
+            Role.JUDGE,
+            Role.REPORTER,
+            Role.HACKER,
             Role.TERRORIST,
             Role.SOLDIER,
+            Role.NURSE,
+            Role.CULT_LEADER,
+            Role.FANATIC,
         )
         if {
             Role.DETECTIVE: config.enable_detective,
@@ -366,24 +548,36 @@ def current_settings_text(prefix: str = "마피아 설정을 저장했습니다.
             Role.GRAVEROBBER: config.enable_graverobber,
             Role.SPY: config.enable_spy,
             Role.CONTRACTOR: config.enable_contractor,
+            Role.WITCH: config.enable_witch,
+            Role.SCIENTIST: config.enable_scientist,
             Role.GODFATHER: config.enable_godfather,
             Role.JOKER: config.enable_joker,
             Role.POLITICIAN: config.enable_politician,
+            Role.JUDGE: config.enable_judge,
+            Role.REPORTER: config.enable_reporter,
+            Role.HACKER: config.enable_hacker,
             Role.TERRORIST: config.enable_terrorist,
             Role.SOLDIER: config.enable_soldier,
+            Role.NURSE: config.enable_nurse,
+            Role.CULT_LEADER: config.enable_cult_team,
+            Role.FANATIC: config.enable_cult_team,
         }[role]
     ]
     return (
         f"{prefix}\n"
         f"기본 직업: 마피아 {config.default_mafia_count}명, "
-        f"의사 {config.default_doctor_count}명, 경찰 {config.default_police_count}명\n"
+        f"의사 {config.default_doctor_count}명, "
+        f"수사직 {config.default_police_count}명\n"
         f"특수룰 수: 시민 {config.citizen_special_count}개, "
         f"마피아 {config.mafia_special_count}개, 중립 {config.neutral_special_count}개\n"
         f"활성 특수룰: {', '.join(enabled) if enabled else '없음'}\n"
+        f"수사직 후보: {investigation_candidates_text()}\n"
+        f"교주팀: {'켜짐 - 교주 1명, 광신도 1명 필수 배정' if config.enable_cult_team else '꺼짐'}\n"
         f"채팅 슬로우모드: {config.chat_slowmode_seconds}초\n"
         f"사망 시 직업 공개: {'공개' if config.reveal_death_roles else '비공개'}\n"
         f"경찰 조사 성공 여부 공개: {'공개' if config.reveal_public_police_status else '비공개'}\n"
-        f"아침 생존 마피아 수 공개: {'공개' if config.reveal_morning_mafia_count else '비공개'}"
+        f"아침 생존 마피아 수 공개: {'공개' if config.reveal_morning_mafia_count else '비공개'}\n"
+        f"익명 채팅: {'켜짐' if config.anonymous_mode else '꺼짐'}"
     )
 
 
@@ -393,6 +587,11 @@ def disable_view_items(view: discord.ui.View | None) -> None:
     for item in view.children:
         if hasattr(item, "disabled"):
             item.disabled = True
+
+
+def target_select_label(target: Player, actor_id: int) -> str:
+    label = f"{target.name}(나)" if target.user_id == actor_id else target.name
+    return label[:100]
 
 
 def make_embed(
@@ -453,9 +652,90 @@ async def send_interaction_reply(
         color=ERROR_EMBED_COLOR if private else DEFAULT_EMBED_COLOR,
     )
     if interaction.response.is_done():
-        await interaction.followup.send(embed=embed, ephemeral=ephemeral)
+        with suppress(discord.HTTPException, discord.NotFound):
+            await interaction.followup.send(embed=embed, ephemeral=ephemeral)
     else:
-        await interaction.response.send_message(embed=embed, ephemeral=ephemeral)
+        try:
+            await interaction.response.send_message(embed=embed, ephemeral=ephemeral)
+        except discord.NotFound:
+            with suppress(discord.HTTPException, discord.NotFound):
+                await interaction.followup.send(embed=embed, ephemeral=ephemeral)
+
+
+def status_display_name(running: RunningGame, player: Player) -> str:
+    if running.anonymous_enabled:
+        return running.anonymous_aliases.get(player.user_id, player.name)
+    return player.name
+
+
+def status_player_list(running: RunningGame, players: list[Player]) -> str:
+    if not players:
+        return "없음"
+    sorted_players = sorted(
+        players,
+        key=lambda player: status_display_name(running, player).casefold(),
+    )
+    names = [status_display_name(running, player) for player in sorted_players]
+    shown = names[:40]
+    suffix = f" 외 {len(names) - len(shown)}명" if len(names) > len(shown) else ""
+    return ", ".join(shown) + suffix
+
+
+def game_status_text(running: RunningGame) -> str:
+    alive = running.game.alive_players()
+    dead = running.game.dead_players()
+    return (
+        f"{running.game.day_number}일차 / 현재 단계: {running.game.phase.value}\n"
+        f"생존자 **{len(alive)}명** / 사망자 **{len(dead)}명**\n\n"
+        f"생존자 목록\n{status_player_list(running, alive)}\n\n"
+        f"사망자 목록\n{status_player_list(running, dead)}"
+    )
+
+
+def private_role_status_players(running: RunningGame, player: Player) -> tuple[str, list[Player]]:
+    game = running.game
+    if game.is_cult_team(player):
+        return "내 교주팀", [target for target in game.players if game.is_cult_team(target)]
+    if game.is_known_mafia_team(player):
+        return "내 마피아팀", [target for target in game.players if game.is_known_mafia_team(target)]
+    return f"내 역할({player.role.value})", [target for target in game.players if target.role == player.role]
+
+
+def command_status_text(running: RunningGame, requester_id: int) -> str:
+    message = game_status_text(running)
+    player = running.game.get_player(requester_id)
+    if not running.anonymous_enabled or not player:
+        return message
+
+    label, same_group = private_role_status_players(running, player)
+    alive = [target for target in same_group if target.alive]
+    dead = [target for target in same_group if not target.alive]
+    return (
+        f"{message}\n\n"
+        f"{label} 현황\n"
+        f"생존 **{len(alive)}명** / 사망 **{len(dead)}명**\n"
+        f"생존: {status_player_list(running, alive)}\n"
+        f"사망: {status_player_list(running, dead)}"
+    )
+
+
+async def upsert_game_status(guild: discord.Guild, running: RunningGame) -> None:
+    channel = guild.get_channel(running.channel_id)
+    if not isinstance(channel, discord.TextChannel):
+        return
+
+    embed = make_embed(game_status_text(running), title="게임 현황", color=SUCCESS_EMBED_COLOR)
+    if running.game_status_message_id:
+        try:
+            message = await channel.fetch_message(running.game_status_message_id)
+            await message.edit(embed=embed)
+            return
+        except discord.DiscordException:
+            pass
+
+    with suppress(discord.DiscordException):
+        message = await channel.send(embed=embed)
+        running.game_status_message_id = message.id
 
 
 async def wait_for_event_or_timeout(event: asyncio.Event, seconds: int) -> None:
@@ -639,6 +919,9 @@ class JoinGameView(discord.ui.View):
         interaction: discord.Interaction,
         button: discord.ui.Button[discord.ui.View],
     ) -> None:
+        if not interaction.response.is_done():
+            with suppress(discord.HTTPException, discord.NotFound):
+                await interaction.response.defer(ephemeral=True, thinking=True)
         async with self.lock:
             if not self.accepting:
                 await send_interaction_reply(interaction, "참가자 모집이 종료되었습니다.", private=True)
@@ -706,18 +989,26 @@ class JoinGameView(discord.ui.View):
 class NightActionSelect(discord.ui.Select[discord.ui.View]):
     def __init__(self, guild_id: int, actor_id: int, role: Role, targets: list[Player]) -> None:
         options = [
-            discord.SelectOption(label=target.name[:100], value=str(target.user_id))
+            discord.SelectOption(label=target_select_label(target, actor_id), value=str(target.user_id))
             for target in targets[:25]
         ]
+        if role == Role.REPORTER:
+            options.append(discord.SelectOption(label="사용 안함", value="skip"))
         placeholder = {
             Role.MAFIA: "공격할 대상을 선택하세요",
             Role.DOCTOR: "보호할 대상을 선택하세요",
+            Role.NURSE: "처방/치료 대상을 선택하세요",
             Role.POLICE: "조사할 대상을 선택하세요",
+            Role.VIGILANTE: "숙청할 대상을 선택하세요",
+            Role.REPORTER: "특종을 낼 대상 또는 사용 안함을 선택하세요",
             Role.DETECTIVE: "추적할 대상을 선택하세요",
             Role.SHAMAN: "성불할 사망자를 선택하세요",
             Role.SPY: "첩보할 대상을 선택하세요",
+            Role.WITCH: "저주할 대상을 선택하세요",
             Role.GODFATHER: "확정 처치할 대상을 선택하세요",
             Role.TERRORIST: "지목할 대상을 선택하세요",
+            Role.CULT_LEADER: "포교할 대상을 선택하세요",
+            Role.FANATIC: "추종할 대상을 선택하세요",
         }[role]
         super().__init__(placeholder=placeholder, min_values=1, max_values=1, options=options)
         self.guild_id = guild_id
@@ -738,7 +1029,8 @@ class NightActionSelect(discord.ui.Select[discord.ui.View]):
             return
 
         try:
-            result = running.game.submit_night_action(self.actor_id, int(self.values[0]))
+            target_id = None if self.values[0] == "skip" else int(self.values[0])
+            result = running.game.submit_night_action(self.actor_id, target_id)
         except ValueError as error:
             await send_interaction_reply(interaction, str(error), private=True)
             return
@@ -757,6 +1049,11 @@ class NightActionSelect(discord.ui.Select[discord.ui.View]):
             )
             return
 
+        if actor and actor.role == Role.WITCH and running.night_timed_events_due:
+            guild = bot.get_guild(running.guild_id)
+            channel = guild.get_channel(running.channel_id) if guild else None
+            if guild and isinstance(channel, discord.abc.Messageable):
+                await apply_timed_night_events(guild, channel, running)
         if running.game.all_night_actions_submitted():
             running.night_complete_event.set()
         await interaction.response.edit_message(
@@ -772,10 +1069,108 @@ class NightActionView(discord.ui.View):
         self.add_item(NightActionSelect(guild_id, actor.user_id, actor.role, targets))
 
 
+class HackerDayActionSelect(discord.ui.Select[discord.ui.View]):
+    def __init__(self, guild_id: int, actor_id: int, targets: list[Player]) -> None:
+        options = [
+            discord.SelectOption(label=target_select_label(target, actor_id), value=str(target.user_id))
+            for target in targets[:25]
+        ]
+        super().__init__(
+            placeholder="해킹할 대상을 선택하세요",
+            min_values=1,
+            max_values=1,
+            options=options,
+        )
+        self.guild_id = guild_id
+        self.actor_id = actor_id
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        if interaction.user.id != self.actor_id:
+            await send_interaction_reply(interaction, "본인에게 온 선택지만 사용할 수 있습니다.", private=True)
+            return
+
+        running = games.get(self.guild_id)
+        if not running:
+            await send_interaction_reply(interaction, "진행 중인 게임이 없습니다.", private=True)
+            return
+
+        try:
+            result = running.game.submit_hacker_action(self.actor_id, int(self.values[0]))
+        except ValueError as error:
+            await send_interaction_reply(interaction, str(error), private=True)
+            return
+
+        disable_view_items(self.view)
+        await interaction.response.edit_message(
+            content=None,
+            embed=make_embed(
+                f"{result}\n밤이 시작될 때 대상의 직업을 확인합니다.",
+                title="해킹 완료",
+                color=SUCCESS_EMBED_COLOR,
+            ),
+            view=self.view,
+        )
+
+
+class HackerDayActionView(discord.ui.View):
+    def __init__(self, guild_id: int, actor: Player, targets: list[Player]) -> None:
+        super().__init__(timeout=None)
+        self.add_item(HackerDayActionSelect(guild_id, actor.user_id, targets))
+
+
+class VigilanteDayActionSelect(discord.ui.Select[discord.ui.View]):
+    def __init__(self, guild_id: int, actor_id: int, targets: list[Player]) -> None:
+        options = [
+            discord.SelectOption(label=target_select_label(target, actor_id), value=str(target.user_id))
+            for target in targets[:25]
+        ]
+        super().__init__(
+            placeholder="숙청 조사 대상을 선택하세요",
+            min_values=1,
+            max_values=1,
+            options=options,
+        )
+        self.guild_id = guild_id
+        self.actor_id = actor_id
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        if interaction.user.id != self.actor_id:
+            await send_interaction_reply(interaction, "본인에게 온 선택지만 사용할 수 있습니다.", private=True)
+            return
+
+        running = games.get(self.guild_id)
+        if not running:
+            await send_interaction_reply(interaction, "진행 중인 게임이 없습니다.", private=True)
+            return
+
+        try:
+            result = running.game.submit_vigilante_investigation(self.actor_id, int(self.values[0]))
+        except ValueError as error:
+            await send_interaction_reply(interaction, str(error), private=True)
+            return
+
+        disable_view_items(self.view)
+        await interaction.response.edit_message(
+            content=None,
+            embed=make_embed(
+                f"{result}\n밤이 시작될 때 대상이 마피아팀인지 확인합니다.",
+                title="숙청 조사 완료",
+                color=SUCCESS_EMBED_COLOR,
+            ),
+            view=self.view,
+        )
+
+
+class VigilanteDayActionView(discord.ui.View):
+    def __init__(self, guild_id: int, actor: Player, targets: list[Player]) -> None:
+        super().__init__(timeout=None)
+        self.add_item(VigilanteDayActionSelect(guild_id, actor.user_id, targets))
+
+
 class ContractorContactSelect(discord.ui.Select[discord.ui.View]):
     def __init__(self, guild_id: int, actor_id: int, targets: list[Player]) -> None:
         options = [
-            discord.SelectOption(label=target.name[:100], value=str(target.user_id))
+            discord.SelectOption(label=target_select_label(target, actor_id), value=str(target.user_id))
             for target in targets[:25]
         ]
         super().__init__(
@@ -826,7 +1221,10 @@ class ContractorContactView(discord.ui.View):
 class ContractorTargetSelect(discord.ui.Select[discord.ui.View]):
     def __init__(self, parent_view: "ContractorContractView", slot: int, targets: list[Player]) -> None:
         options = [
-            discord.SelectOption(label=target.name[:100], value=str(target.user_id))
+            discord.SelectOption(
+                label=target_select_label(target, parent_view.actor.user_id),
+                value=str(target.user_id),
+            )
             for target in targets[:25]
         ]
         super().__init__(
@@ -1211,7 +1609,365 @@ class MafiaBot(commands.Bot):
 
 intents = discord.Intents.default()
 intents.members = True
+intents.message_content = True
 bot = MafiaBot(command_prefix="!", intents=intents)
+
+
+def anonymous_message_body(message: discord.Message) -> str:
+    parts: list[str] = []
+    if message.content.strip():
+        parts.append(message.content.strip())
+    if message.attachments:
+        parts.extend(attachment.url for attachment in message.attachments)
+    return "\n".join(parts) or "(내용 없음)"
+
+
+def can_use_anonymous_general_chat(running: RunningGame, player: Player) -> bool:
+    if not player.alive:
+        return player.user_id not in running.game.purified_dead_ids
+    if not player.alive or running.game.is_frog(player):
+        return False
+    if player.role == Role.SHAMAN and running.game.phase == Phase.NIGHT:
+        return True
+    if running.game.phase == Phase.DAY:
+        return True
+    return running.game.phase == Phase.FINAL_DEFENSE and running.final_defense_user_id == player.user_id
+
+
+def can_use_anonymous_role_chat(running: RunningGame, player: Player, role: Role) -> bool:
+    if running.game.is_frog(player):
+        return False
+    if player.alive and (player.user_id, role) in running.anonymous_role_input_channel_ids:
+        return True
+    if role == Role.MAFIA:
+        return player.alive and running.game.is_known_mafia_team(player)
+    return player.alive and player.role == role
+
+
+def anonymous_avatar_url(author_label: str) -> str | None:
+    term = ANIMAL_IMAGE_TERMS.get(author_label)
+    if not term:
+        return None
+    digest = hashlib.sha1(author_label.encode("utf-8")).hexdigest()
+    lock = int(digest[:8], 16) % 100000
+    return f"https://loremflickr.com/128/128/{quote_plus(term)}?lock={lock}"
+
+
+async def send_anonymous_text(
+    channel: discord.abc.Messageable,
+    author_label: str,
+    body: str,
+    *,
+    running: RunningGame | None = None,
+) -> None:
+    if running and isinstance(channel, discord.TextChannel):
+        webhook = await anonymous_webhook(channel, running)
+        if webhook:
+            with suppress(discord.HTTPException):
+                send_kwargs = {
+                    "username": author_label[:80],
+                    "allowed_mentions": discord.AllowedMentions.none(),
+                    "wait": False,
+                }
+                avatar_url = anonymous_avatar_url(author_label)
+                if avatar_url:
+                    send_kwargs["avatar_url"] = avatar_url
+                await webhook.send(body, **send_kwargs)
+                return
+    with suppress(discord.HTTPException):
+        await channel.send(
+            f"{author_label}: {body}",
+            allowed_mentions=discord.AllowedMentions.none(),
+        )
+
+
+async def anonymous_webhook(
+    channel: discord.TextChannel,
+    running: RunningGame,
+) -> discord.Webhook | None:
+    url = running.anonymous_webhook_urls.get(channel.id)
+    if url:
+        return discord.Webhook.from_url(url, client=bot)
+    try:
+        webhook = await channel.create_webhook(name="Mafia Anonymous")
+    except discord.DiscordException:
+        return None
+    running.anonymous_webhook_urls[channel.id] = webhook.url
+    return webhook
+
+
+async def prepare_anonymous_webhook(
+    channel: discord.TextChannel,
+    running: RunningGame,
+) -> None:
+    await anonymous_webhook(channel, running)
+
+
+async def relay_to_channels(
+    deliveries: list[tuple[discord.abc.Messageable, str, str]],
+    running: RunningGame,
+) -> None:
+    semaphore = asyncio.Semaphore(20)
+
+    async def send_one(channel: discord.abc.Messageable, label: str, body: str) -> None:
+        async with semaphore:
+            await send_anonymous_text(channel, label, body, running=running)
+
+    await asyncio.gather(
+        *(send_one(channel, label, body) for channel, label, body in deliveries),
+        return_exceptions=True,
+    )
+
+
+async def send_anonymous_log(
+    guild: discord.Guild,
+    running: RunningGame,
+    *,
+    player: Player,
+    body: str,
+    role: Role | None = None,
+    context: str | None = None,
+) -> None:
+    channel = guild.get_channel(running.channel_id)
+    if not isinstance(channel, discord.abc.Messageable):
+        return
+    alias = running.anonymous_aliases.get(player.user_id, player.name)
+    label = role.value if role else context
+    prefix = f"[익명 로그/{label}]" if label else "[익명 로그]"
+    await send_anonymous_text(channel, prefix, f"{alias} - {body}")
+
+
+async def relay_anonymous_general_message(
+    guild: discord.Guild,
+    running: RunningGame,
+    sender: Player,
+    body: str,
+) -> None:
+    sender_alias = running.anonymous_aliases.get(sender.user_id, "익명")
+    deliveries: list[tuple[discord.abc.Messageable, str, str]] = []
+
+    for viewer in running.game.alive_players():
+        if viewer.user_id == sender.user_id:
+            continue
+        if running.game.is_frog(viewer):
+            continue
+        channel_id = running.anonymous_input_channel_ids.get(viewer.user_id)
+        channel = guild.get_channel(channel_id) if channel_id else None
+        if not isinstance(channel, discord.TextChannel):
+            continue
+        deliveries.append((channel, sender_alias, body))
+
+    await relay_to_channels(deliveries, running)
+    await send_anonymous_log(guild, running, player=sender, body=body, context="사망자")
+
+
+def anonymous_dead_chat_viewers(running: RunningGame) -> list[Player]:
+    viewers: list[Player] = []
+    for player in running.game.players:
+        if not player.alive and player.user_id not in running.game.purified_dead_ids:
+            viewers.append(player)
+            continue
+        if player.alive and player.role == Role.SHAMAN and not running.game.is_frog(player):
+            viewers.append(player)
+    return viewers
+
+
+async def relay_anonymous_dead_message(
+    guild: discord.Guild,
+    running: RunningGame,
+    sender: Player,
+    body: str,
+) -> None:
+    sender_alias = running.anonymous_aliases.get(sender.user_id, "익명")
+    deliveries: list[tuple[discord.abc.Messageable, str, str]] = []
+
+    for viewer in anonymous_dead_chat_viewers(running):
+        if viewer.user_id == sender.user_id:
+            continue
+        channel_id = running.anonymous_input_channel_ids.get(viewer.user_id)
+        channel = guild.get_channel(channel_id) if channel_id else None
+        if not isinstance(channel, discord.TextChannel):
+            continue
+        deliveries.append((channel, sender_alias, body))
+
+    await relay_to_channels(deliveries, running)
+    await send_anonymous_log(guild, running, player=sender, body=body)
+
+
+async def relay_anonymous_role_message(
+    guild: discord.Guild,
+    running: RunningGame,
+    sender: Player,
+    role: Role,
+    body: str,
+) -> None:
+    sender_alias = running.anonymous_aliases.get(sender.user_id, "익명")
+    deliveries: list[tuple[discord.abc.Messageable, str, str]] = []
+
+    for viewer in anonymous_role_status_players(running, role):
+        if viewer.user_id == sender.user_id:
+            continue
+        if not can_use_anonymous_role_chat(running, viewer, role):
+            continue
+        input_id = running.anonymous_role_input_channel_ids.get((viewer.user_id, role))
+        input_channel = guild.get_channel(input_id) if input_id else None
+        if not isinstance(input_channel, discord.TextChannel):
+            continue
+        deliveries.append((input_channel, sender_alias, body))
+
+    await relay_to_channels(deliveries, running)
+    await send_anonymous_log(guild, running, player=sender, body=body, role=role)
+
+
+async def set_anonymous_general_input_access(
+    guild: discord.Guild,
+    running: RunningGame,
+    player: Player,
+    *,
+    can_chat: bool,
+    reason: str,
+) -> None:
+    member = await get_guild_member(guild, player.user_id)
+    if not member:
+        return
+    channel_id = running.anonymous_input_channel_ids.get(player.user_id)
+    channel = guild.get_channel(channel_id) if channel_id else None
+    if not isinstance(channel, discord.TextChannel):
+        return
+    can_use = (
+        can_chat
+        and (
+            player.alive
+            and not running.game.is_frog(player)
+            or (not player.alive and player.user_id not in running.game.purified_dead_ids)
+        )
+    )
+    with suppress(discord.DiscordException):
+        await channel.set_permissions(
+            member,
+            overwrite=anonymous_input_overwrite(True, can_use),
+            reason=reason,
+        )
+
+
+async def set_anonymous_general_chat_permissions(
+    guild: discord.Guild,
+    running: RunningGame,
+    *,
+    can_chat: bool,
+    reason: str,
+) -> None:
+    for player in running.game.alive_players():
+        await set_anonymous_general_input_access(
+            guild,
+            running,
+            player,
+            can_chat=can_chat,
+            reason=reason,
+        )
+
+
+async def handle_anonymous_message(
+    message: discord.Message,
+    running: RunningGame,
+    *,
+    owner_id: int,
+    role: Role | None,
+) -> bool:
+    if message.author.id != owner_id:
+        with suppress(discord.DiscordException):
+            await message.delete()
+        return True
+    if not message.guild:
+        return True
+
+    player = running.game.get_player(owner_id)
+    if not player:
+        return True
+
+    body = anonymous_message_body(message)
+
+    if role is None:
+        if not can_use_anonymous_general_chat(running, player):
+            await set_anonymous_general_input_access(
+                message.guild,
+                running,
+                player,
+                can_chat=False,
+                reason="마피아 게임 채팅 불가 시간 권한 재적용",
+            )
+            return True
+        if not player.alive or (player.role == Role.SHAMAN and running.game.phase == Phase.NIGHT):
+            await relay_anonymous_dead_message(message.guild, running, player, body)
+            return True
+        else:
+            await relay_anonymous_general_message(message.guild, running, player, body)
+            return True
+    else:
+        if not can_use_anonymous_role_chat(running, player, role):
+            member = await get_guild_member(message.guild, player.user_id)
+            if member and isinstance(message.channel, discord.TextChannel):
+                with suppress(discord.DiscordException):
+                    await message.channel.set_permissions(
+                        member,
+                        overwrite=anonymous_input_overwrite(True, False),
+                        reason="마피아 게임 역할 채팅 불가 시간 권한 재적용",
+                    )
+            return True
+        await relay_anonymous_role_message(message.guild, running, player, role, body)
+        return True
+
+
+@bot.event
+async def on_message(message: discord.Message) -> None:
+    if message.author.bot:
+        return
+
+    for running in games.values():
+        owner_id = running.anonymous_input_channel_owners.get(message.channel.id)
+        if owner_id is not None:
+            await handle_anonymous_message(message, running, owner_id=owner_id, role=None)
+            return
+
+        role_input = running.anonymous_role_input_channels.get(message.channel.id)
+        if role_input is not None:
+            owner_id, role = role_input
+            await handle_anonymous_message(message, running, owner_id=owner_id, role=role)
+            return
+
+        if message.channel.id != running.frog_channel_id:
+            continue
+        player = running.game.get_player(message.author.id)
+        if not player or not running.game.is_frog(player):
+            try:
+                await message.delete()
+            except discord.DiscordException:
+                pass
+            return
+        if running.game.phase != Phase.DAY:
+            try:
+                await message.delete()
+            except discord.DiscordException:
+                pass
+            return
+
+        croak_count = max(1, len(message.content))
+        game_channel = message.guild.get_channel(running.channel_id) if message.guild else None
+        try:
+            await message.delete()
+        except discord.DiscordException:
+            pass
+        if message.guild:
+            game_channel = game_display_channel(message.guild, running, game_channel)
+        if isinstance(game_channel, discord.abc.Messageable):
+            await send_embed(
+                game_channel,
+                f"개구리: {'개굴' * croak_count}",
+                title="개구리 채팅",
+            )
+        return
+
+    await bot.process_commands(message)
 
 
 @bot.tree.command(name="마피아설정", description="마피아 게임 기본 설정을 변경합니다.")
@@ -1231,9 +1987,14 @@ bot = MafiaBot(command_prefix="!", intents=intents)
     graverobber="도굴꾼 활성화 여부",
     spy="스파이 활성화 여부",
     contractor="청부업자 활성화 여부",
+    witch="마녀 활성화 여부",
+    scientist="과학자 활성화 여부",
     godfather="대부 활성화 여부",
     joker="조커 활성화 여부",
     politician="정치인 활성화 여부",
+    judge="판사 활성화 여부",
+    reporter="기자 활성화 여부",
+    hacker="해커 활성화 여부",
     terrorist="테러리스트 활성화 여부",
     soldier="군인 활성화 여부",
 )
@@ -1254,9 +2015,14 @@ async def configure_game(
     graverobber: bool | None = None,
     spy: bool | None = None,
     contractor: bool | None = None,
+    witch: bool | None = None,
+    scientist: bool | None = None,
     godfather: bool | None = None,
     joker: bool | None = None,
     politician: bool | None = None,
+    judge: bool | None = None,
+    reporter: bool | None = None,
+    hacker: bool | None = None,
     terrorist: bool | None = None,
     soldier: bool | None = None,
 ) -> None:
@@ -1291,9 +2057,14 @@ async def configure_game(
         "enable_graverobber": graverobber,
         "enable_spy": spy,
         "enable_contractor": contractor,
+        "enable_witch": witch,
+        "enable_scientist": scientist,
         "enable_godfather": godfather,
         "enable_joker": joker,
         "enable_politician": politician,
+        "enable_judge": judge,
+        "enable_reporter": reporter,
+        "enable_hacker": hacker,
         "enable_terrorist": terrorist,
         "enable_soldier": soldier,
     }
@@ -1317,10 +2088,101 @@ async def configure_game(
     await send_interaction_reply(interaction, current_settings_text(), private=False)
 
 
+@bot.tree.command(name="마피아익명설정", description="마피아 게임 익명 채팅 사용 여부를 설정합니다.")
+@app_commands.describe(enabled="익명 채팅 사용 여부")
+async def configure_anonymous_mode(
+    interaction: discord.Interaction,
+    enabled: bool,
+) -> None:
+    require_manager(interaction)
+    config.anonymous_mode = enabled
+    save_config()
+    await send_interaction_reply(
+        interaction,
+        current_settings_text("마피아 익명 설정을 저장했습니다."),
+        private=False,
+    )
+
+
+@bot.tree.command(name="마피아추가설정", description="추가 역할 묶음을 설정합니다.")
+@app_commands.describe(
+    nurse="간호사 역할 활성화 여부",
+    cult_team="교주팀 활성화 여부. 켜면 교주와 광신도가 함께 배정됩니다.",
+)
+async def configure_extra_roles(
+    interaction: discord.Interaction,
+    nurse: bool | None = None,
+    cult_team: bool | None = None,
+) -> None:
+    require_manager(interaction)
+    updates: dict[str, bool] = {}
+    if nurse is not None:
+        updates["enable_nurse"] = nurse
+    if cult_team is not None:
+        updates["enable_cult_team"] = cult_team
+
+    previous = {key: getattr(config, key) for key in updates}
+    for key, value in updates.items():
+        setattr(config, key, value)
+
+    try:
+        selected_role_counts(choose_special_roles())
+    except ValueError as error:
+        for key, value in previous.items():
+            setattr(config, key, value)
+        await send_interaction_reply(interaction, str(error), private=True)
+        return
+
+    save_config()
+    await send_interaction_reply(
+        interaction,
+        current_settings_text("마피아 추가 설정을 저장했습니다."),
+        private=False,
+    )
+
+
+@bot.tree.command(name="마피아수사설정", description="수사직 후보를 설정합니다.")
+@app_commands.describe(
+    agent="요원을 수사직 랜덤 후보에 포함할지 설정합니다.",
+    vigilante="자경단원을 수사직 랜덤 후보에 포함할지 설정합니다.",
+)
+async def configure_investigation_role(
+    interaction: discord.Interaction,
+    agent: bool | None = None,
+    vigilante: bool | None = None,
+) -> None:
+    require_manager(interaction)
+    updates: dict[str, bool] = {}
+    if agent is not None:
+        updates["use_agent"] = agent
+    if vigilante is not None:
+        updates["use_vigilante"] = vigilante
+
+    previous = {key: getattr(config, key) for key in updates}
+    for key, value in updates.items():
+        setattr(config, key, value)
+
+    try:
+        selected_role_counts(choose_special_roles())
+    except ValueError as error:
+        for key, value in previous.items():
+            setattr(config, key, value)
+        await send_interaction_reply(interaction, str(error), private=True)
+        return
+
+    save_config()
+    await send_interaction_reply(
+        interaction,
+        current_settings_text("마피아 수사 설정을 저장했습니다."),
+        private=False,
+    )
+
+
 @bot.tree.command(name="마피아시작", description="저장된 설정대로 마피아 게임 참가자를 모집하고 시작합니다.")
 async def start_game(
     interaction: discord.Interaction,
 ) -> None:
+    reload_config()
     if not interaction.guild or interaction.guild_id is None or interaction.channel_id is None:
         await send_interaction_reply(interaction, "서버 채널에서만 사용할 수 있습니다.", private=True)
         return
@@ -1346,6 +2208,10 @@ async def start_game(
         try:
             special_roles = choose_special_roles()
             role_counts = selected_role_counts(special_roles)
+            fixed_special_roles: list[Role] = []
+            if config.enable_cult_team:
+                fixed_special_roles.extend([Role.CULT_LEADER, Role.FANATIC])
+            game_special_roles = [*special_roles, *fixed_special_roles]
         except ValueError as error:
             await interaction.followup.send(
                 embed=make_embed(str(error), color=ERROR_EMBED_COLOR),
@@ -1419,9 +2285,11 @@ async def start_game(
                 players=player_data,
                 mafia_count=role_counts[Role.MAFIA],
                 doctor_count=role_counts[Role.DOCTOR],
-                police_count=role_counts[Role.POLICE],
+                police_count=role_counts.get(Role.POLICE, 0),
                 joker_count=0,
-                special_roles=special_roles,
+                special_roles=game_special_roles,
+                agent_count=role_counts.get(Role.AGENT, 0),
+                vigilante_count=role_counts.get(Role.VIGILANTE, 0),
             )
         except ValueError as error:
             await remove_participant_roles_from_ids(
@@ -1442,6 +2310,7 @@ async def start_game(
             reveal_death_roles=config.reveal_death_roles,
             reveal_public_police_status=config.reveal_public_police_status,
             reveal_morning_mafia_count=config.reveal_morning_mafia_count,
+            anonymous_enabled=config.anonymous_mode,
             participant_user_ids=set(join_view.joined_ids),
         )
         games[interaction.guild.id] = running
@@ -1462,7 +2331,9 @@ async def start_game(
                 f"\n사망 시 직업 공개: {'공개' if config.reveal_death_roles else '비공개'}"
                 f"\n경찰 조사 성공 여부 공개: {'공개' if config.reveal_public_police_status else '비공개'}"
                 f"\n아침 생존 마피아 수 공개: {'공개' if config.reveal_morning_mafia_count else '비공개'}"
+                f"\n교주팀: {'켜짐 - 교주 1명, 광신도 1명 필수 배정' if config.enable_cult_team else '꺼짐'}"
                 f"\n채팅 슬로우모드: {config.chat_slowmode_seconds}초"
+                f"\n익명 채팅: {'켜짐' if config.anonymous_mode else '꺼짐'}"
                 f"{warning}",
                 title="게임 시작",
                 color=SUCCESS_EMBED_COLOR,
@@ -1524,6 +2395,24 @@ async def show_status(interaction: discord.Interaction) -> None:
     )
 
 
+@bot.tree.command(name="상태", description="현재 마피아 게임 생존자와 사망자를 확인합니다.")
+async def show_public_status(interaction: discord.Interaction) -> None:
+    if not interaction.guild_id:
+        await send_interaction_reply(interaction, "서버에서만 사용할 수 있습니다.", private=True)
+        return
+
+    running = games.get(interaction.guild_id)
+    if not running:
+        await send_interaction_reply(interaction, "진행 중인 게임이 없습니다.", private=True)
+        return
+
+    player = running.game.get_player(interaction.user.id)
+    await interaction.response.send_message(
+        embed=make_embed(command_status_text(running, interaction.user.id), title="게임 현황"),
+        ephemeral=running.anonymous_enabled and player is not None,
+    )
+
+
 @bot.tree.command(name="마피아능력", description="배정받은 역할과 능력 설명을 다시 확인합니다.")
 async def show_abilities(interaction: discord.Interaction) -> None:
     if not interaction.guild_id:
@@ -1546,19 +2435,23 @@ async def show_abilities(interaction: discord.Interaction) -> None:
     )
 
 
-@bot.tree.command(name="역할안내", description="마피아 게임 역할 안내를 공지용 임베드로 보냅니다.")
-async def announce_role_guide(interaction: discord.Interaction) -> None:
-    await interaction.response.send_message(
-        embed=make_role_guide_embed(title="역할 안내"),
-    )
+@bot.tree.command(name="역할설명", description="마피아 게임 전체 역할 설명을 공지용 임베드로 보냅니다.")
+async def show_role_descriptions(interaction: discord.Interaction) -> None:
+    embeds = make_role_guide_embeds(title="역할 설명")
+    await interaction.response.send_message(embed=embeds[0])
+    for embed in embeds[1:]:
+        await interaction.followup.send(embed=embed)
 
 
 @configure_game.error
+@configure_extra_roles.error
+@configure_investigation_role.error
 @start_game.error
 @stop_game.error
 @show_status.error
+@show_public_status.error
 @show_abilities.error
-@announce_role_guide.error
+@show_role_descriptions.error
 async def command_error(
     interaction: discord.Interaction,
     error: app_commands.AppCommandError,
@@ -1570,16 +2463,17 @@ async def command_error(
         print(f"Command error: {root_error!r}")
         message = "명령을 실행하는 중 오류가 발생했습니다."
 
+    error_embed = make_embed(message, color=ERROR_EMBED_COLOR)
     if interaction.response.is_done():
-        await interaction.followup.send(
-            embed=make_embed(message, color=ERROR_EMBED_COLOR),
-            ephemeral=True,
-        )
-    else:
-        await interaction.response.send_message(
-            embed=make_embed(message, color=ERROR_EMBED_COLOR),
-            ephemeral=True,
-        )
+        with suppress(discord.HTTPException):
+            await interaction.followup.send(embed=error_embed, ephemeral=True)
+        return
+
+    try:
+        await interaction.response.send_message(embed=error_embed, ephemeral=True)
+    except discord.HTTPException:
+        with suppress(discord.HTTPException):
+            await interaction.followup.send(embed=error_embed, ephemeral=True)
 
 
 async def collect_participants(
@@ -1691,6 +2585,14 @@ async def set_game_channel_chat(
     participants_can_chat: bool,
     reason: str,
 ) -> bool:
+    if running.anonymous_enabled:
+        await set_anonymous_general_chat_permissions(
+            guild,
+            running,
+            can_chat=participants_can_chat,
+            reason=reason,
+        )
+        participants_can_chat = False
     if not supports_member_overwrites(channel):
         return False
 
@@ -1743,6 +2645,7 @@ async def set_channel_slowmode(
         return
     if running.original_slowmode_delay is None:
         running.original_slowmode_delay = channel.slowmode_delay
+        running.original_slowmode_channel_id = channel.id
     try:
         await channel.edit(slowmode_delay=seconds, reason=reason)
     except discord.DiscordException:
@@ -1756,7 +2659,7 @@ async def set_channel_slowmode(
 async def restore_channel_slowmode(guild: discord.Guild, running: RunningGame) -> None:
     if running.original_slowmode_delay is None:
         return
-    channel = guild.get_channel(running.channel_id)
+    channel = guild.get_channel(running.original_slowmode_channel_id or running.channel_id)
     if not isinstance(channel, discord.TextChannel):
         return
     try:
@@ -1812,6 +2715,15 @@ async def set_member_chat_permission(
     can_send: bool,
     reason: str,
 ) -> None:
+    if running.anonymous_enabled:
+        await set_anonymous_general_input_access(
+            guild,
+            running,
+            player,
+            can_chat=can_send,
+            reason=reason,
+        )
+        return
     if not supports_member_overwrites(channel):
         return
     member = await get_guild_member(guild, player.user_id)
@@ -1828,6 +2740,17 @@ async def set_member_chat_permission(
 
 
 async def restore_member_channel_chat(guild: discord.Guild, running: RunningGame) -> None:
+    if running.anonymous_enabled and running.final_defense_user_id is not None:
+        player = running.game.get_player(running.final_defense_user_id)
+        if player:
+            await set_anonymous_general_input_access(
+                guild,
+                running,
+                player,
+                can_chat=False,
+                reason="마피아 게임 최후변론 종료로 익명 입력 권한 제거",
+            )
+    running.final_defense_user_id = None
     if not running.member_channel_overwrites:
         return
     channel = guild.get_channel(running.channel_id)
@@ -2025,11 +2948,646 @@ def dead_channel_overwrite(can_view: bool, can_chat: bool) -> discord.Permission
     )
 
 
+def anonymous_input_overwrite(can_view: bool, can_chat: bool) -> discord.PermissionOverwrite:
+    return discord.PermissionOverwrite(
+        view_channel=can_view,
+        send_messages=can_chat,
+        send_messages_in_threads=can_chat,
+        create_public_threads=False,
+        create_private_threads=False,
+        read_message_history=can_view,
+        add_reactions=can_chat,
+    )
+
+
+def sanitize_channel_part(value: str) -> str:
+    return value.replace(" ", "-").replace("/", "-").lower()
+
+
+def assign_anonymous_aliases(running: RunningGame) -> None:
+    import random
+
+    players = sorted(running.game.players, key=lambda player: player.user_id)
+    aliases = list(ANIMAL_ALIASES)
+    random.SystemRandom().shuffle(aliases)
+    running.anonymous_aliases = {
+        player.user_id: aliases[index] if index < len(aliases) else f"동물{index + 1}"
+        for index, player in enumerate(players)
+    }
+
+
+def apply_anonymous_player_names(running: RunningGame) -> None:
+    if not running.anonymous_enabled:
+        return
+    if not running.anonymous_original_names:
+        running.anonymous_original_names = {
+            player.user_id: player.name for player in running.game.players
+        }
+    for player in running.game.players:
+        alias = running.anonymous_aliases.get(player.user_id)
+        if alias:
+            player.name = alias
+
+
+def original_player_name(running: RunningGame, player: Player) -> str:
+    return running.anonymous_original_names.get(player.user_id, player.name)
+
+
+async def create_text_channel_safe(
+    guild: discord.Guild,
+    *,
+    name: str,
+    overwrites: dict[discord.abc.Snowflake, discord.PermissionOverwrite],
+    category: discord.CategoryChannel | None,
+    reason: str,
+    slowmode_delay: int | None = None,
+    topic: str | None = None,
+) -> discord.TextChannel | None:
+    options: dict[str, object] = {}
+    if slowmode_delay is not None:
+        options["slowmode_delay"] = slowmode_delay
+    if topic is not None:
+        options["topic"] = topic[:1024]
+    try:
+        return await guild.create_text_channel(
+            name=name,
+            overwrites=overwrites,
+            category=category,
+            reason=reason,
+            **options,
+        )
+    except discord.DiscordException:
+        try:
+            return await guild.create_text_channel(
+                name=name,
+                overwrites=overwrites,
+                reason=reason,
+                **options,
+            )
+        except discord.DiscordException:
+            return None
+
+
+def anonymous_base_overwrites(
+    guild: discord.Guild,
+    *,
+    participant_can_view: bool,
+    participant_can_chat: bool,
+    default_can_view: bool,
+    default_can_chat: bool,
+) -> dict[discord.abc.Snowflake, discord.PermissionOverwrite]:
+    overwrites: dict[discord.abc.Snowflake, discord.PermissionOverwrite] = {
+        guild.default_role: anonymous_input_overwrite(default_can_view, default_can_chat),
+    }
+    participant_role = get_participant_role(guild)
+    manager_role = discord.utils.get(guild.roles, name=config.manager_role)
+    bot_member = guild.me or (guild.get_member(bot.user.id) if bot.user else None)
+    if participant_role:
+        overwrites[participant_role] = anonymous_input_overwrite(participant_can_view, participant_can_chat)
+    if manager_role:
+        overwrites[manager_role] = anonymous_input_overwrite(False, False)
+    if bot_member:
+        overwrites[bot_member] = anonymous_input_overwrite(True, True)
+    return overwrites
+
+
+async def create_anonymous_chat_channels(
+    guild: discord.Guild,
+    channel: discord.abc.Messageable,
+    running: RunningGame,
+) -> None:
+    if not running.anonymous_enabled:
+        return
+    category = source_channel_category(channel)
+    assign_anonymous_aliases(running)
+    apply_anonymous_player_names(running)
+    running.anonymous_public_channel_id = None
+
+    for player in running.game.players:
+        member = await get_guild_member(guild, player.user_id)
+        if not member:
+            continue
+        alias = running.anonymous_aliases[player.user_id]
+        input_overwrites = anonymous_base_overwrites(
+            guild,
+            participant_can_view=False,
+            participant_can_chat=False,
+            default_can_view=False,
+            default_can_chat=False,
+        )
+        input_overwrites[member] = anonymous_input_overwrite(True, True)
+        input_channel = await create_text_channel_safe(
+            guild,
+            name=f"{sanitize_channel_part(alias)}-채팅",
+            overwrites=input_overwrites,
+            category=category,
+            reason="마피아 게임 개인 익명 입력 채널 생성",
+            slowmode_delay=config.chat_slowmode_seconds,
+        )
+        if not input_channel:
+            continue
+        running.anonymous_input_channel_ids[player.user_id] = input_channel.id
+        running.anonymous_input_channel_owners[input_channel.id] = player.user_id
+        await send_embed(
+            input_channel,
+            f"당신의 익명 이름은 **{alias}** 입니다.\n"
+            "이 개인 채널이 일반 채팅을 대체합니다.\n"
+            "여기에 쓰면 모든 참가자의 개인 채팅방에 익명으로 전달됩니다.",
+            title="익명 입력 채널",
+            color=SUCCESS_EMBED_COLOR,
+        )
+
+
+async def hide_original_game_channel_for_anonymous(
+    guild: discord.Guild,
+    channel: discord.abc.Messageable,
+    running: RunningGame,
+) -> None:
+    if not running.anonymous_enabled or not supports_member_overwrites(channel):
+        return
+    participant_role = get_participant_role(guild)
+    if participant_role:
+        bot_member = guild.me or (guild.get_member(bot.user.id) if bot.user else None)
+        if bot_member:
+            if bot_member.id not in running.member_channel_overwrites:
+                running.member_channel_overwrites[bot_member.id] = clone_overwrite(
+                    channel.overwrites.get(bot_member)
+                )
+            bot_overwrite = channel.overwrites_for(bot_member)
+            bot_overwrite.view_channel = True
+            bot_overwrite.read_message_history = True
+            set_chat_values(bot_overwrite, True)
+            with suppress(discord.DiscordException):
+                await channel.set_permissions(
+                    bot_member,
+                    overwrite=bot_overwrite,
+                    reason="마피아 게임 익명 모드 진행을 위한 봇 권한 유지",
+                )
+        if participant_role.id not in running.game_channel_overwrites:
+            running.game_channel_overwrites[participant_role.id] = clone_overwrite(
+                channel.overwrites.get(participant_role)
+            )
+        overwrite = channel.overwrites_for(participant_role)
+        overwrite.view_channel = False
+        overwrite.read_message_history = False
+        set_chat_values(overwrite, False)
+        with suppress(discord.DiscordException):
+            await channel.set_permissions(
+                participant_role,
+                overwrite=overwrite,
+                reason="마피아 게임 익명 모드로 원본 채널 참가자 역할 열람 차단",
+            )
+        return
+
+    for player in running.game.players:
+        member = await get_guild_member(guild, player.user_id)
+        if not member:
+            continue
+        if member.id not in running.anonymous_original_channel_overwrites:
+            running.anonymous_original_channel_overwrites[member.id] = clone_overwrite(
+                channel.overwrites.get(member)
+            )
+        overwrite = channel.overwrites_for(member)
+        overwrite.view_channel = False
+        overwrite.send_messages = False
+        overwrite.read_message_history = False
+        try:
+            await channel.set_permissions(
+                member,
+                overwrite=overwrite,
+                reason="마피아 게임 익명 모드로 원본 채널 참가자 열람 차단",
+            )
+        except discord.DiscordException:
+            continue
+
+
+async def restore_original_game_channel_for_anonymous(
+    guild: discord.Guild,
+    running: RunningGame,
+) -> None:
+    if not running.anonymous_original_channel_overwrites:
+        return
+    channel = guild.get_channel(running.channel_id)
+    if not isinstance(channel, discord.abc.Messageable) or not supports_member_overwrites(channel):
+        running.anonymous_original_channel_overwrites.clear()
+        return
+    for user_id, original in list(running.anonymous_original_channel_overwrites.items()):
+        member = await get_guild_member(guild, user_id)
+        if not member:
+            running.anonymous_original_channel_overwrites.pop(user_id, None)
+            continue
+        try:
+            await channel.set_permissions(
+                member,
+                overwrite=clone_overwrite(original),
+                reason="마피아 게임 익명 모드 종료로 원본 채널 권한 복구",
+            )
+        except discord.DiscordException:
+            pass
+        running.anonymous_original_channel_overwrites.pop(user_id, None)
+
+
+def anonymous_public_channel(guild: discord.Guild, running: RunningGame) -> discord.TextChannel | None:
+    if running.anonymous_public_channel_id is None:
+        return None
+    channel = guild.get_channel(running.anonymous_public_channel_id)
+    return channel if isinstance(channel, discord.TextChannel) else None
+
+
+def anonymous_personal_channel(
+    guild: discord.Guild,
+    running: RunningGame,
+    player: Player,
+) -> discord.TextChannel | None:
+    channel_id = running.anonymous_input_channel_ids.get(player.user_id)
+    channel = guild.get_channel(channel_id) if channel_id else None
+    return channel if isinstance(channel, discord.TextChannel) else None
+
+
+def game_display_channel(
+    guild: discord.Guild,
+    running: RunningGame,
+    fallback: discord.abc.Messageable,
+) -> discord.abc.Messageable:
+    return anonymous_public_channel(guild, running) or fallback
+
+
+async def send_anonymous_personal_embed(
+    guild: discord.Guild,
+    running: RunningGame,
+    player: Player,
+    message: str,
+    *,
+    view: discord.ui.View | None = None,
+    title: str = "마피아 게임",
+    color: discord.Color = DEFAULT_EMBED_COLOR,
+) -> discord.Message | None:
+    channel = anonymous_personal_channel(guild, running, player)
+    if not channel:
+        return None
+    with suppress(discord.DiscordException):
+        return await send_embed(channel, message, view=view, title=title, color=color)
+    return None
+
+
+async def broadcast_anonymous_personal_embed(
+    guild: discord.Guild,
+    running: RunningGame,
+    message: str,
+    *,
+    view: discord.ui.View | None = None,
+    title: str = "마피아 게임",
+    color: discord.Color = DEFAULT_EMBED_COLOR,
+    include_dead: bool = False,
+) -> list[discord.Message]:
+    if not running.anonymous_enabled:
+        return []
+    targets = running.game.players if include_dead else running.game.alive_players()
+    if view is None:
+        semaphore = asyncio.Semaphore(8)
+
+        async def send_one(player: Player) -> discord.Message | None:
+            async with semaphore:
+                return await send_anonymous_personal_embed(
+                    guild,
+                    running,
+                    player,
+                    message,
+                    view=None,
+                    title=title,
+                    color=color,
+                )
+
+        results = await asyncio.gather(
+            *(send_one(player) for player in targets),
+            return_exceptions=True,
+        )
+        return [result for result in results if isinstance(result, discord.Message)]
+
+    messages: list[discord.Message] = []
+    for player in targets:
+        sent = await send_anonymous_personal_embed(
+            guild,
+            running,
+            player,
+            message,
+            view=view,
+            title=title,
+            color=color,
+        )
+        if sent:
+            messages.append(sent)
+    return messages
+
+
+async def send_game_embed(
+    guild: discord.Guild,
+    channel: discord.abc.Messageable,
+    running: RunningGame,
+    message: str,
+    *,
+    view: discord.ui.View | None = None,
+    title: str = "마피아 게임",
+    color: discord.Color = DEFAULT_EMBED_COLOR,
+    include_dead: bool = False,
+    broadcast: bool = True,
+) -> discord.Message:
+    sent = await send_embed(channel, message, view=view, title=title, color=color)
+    if broadcast:
+        await broadcast_anonymous_personal_embed(
+            guild,
+            running,
+            message,
+            view=view,
+            title=title,
+            color=color,
+            include_dead=include_dead,
+        )
+    return sent
+
+
+async def send_player_secret(
+    guild: discord.Guild,
+    running: RunningGame,
+    player: Player,
+    message: str,
+    view: discord.ui.View | None = None,
+) -> bool:
+    if running.anonymous_enabled:
+        sent = await send_anonymous_personal_embed(
+            guild,
+            running,
+            player,
+            message,
+            view=view,
+            title="비밀 메시지",
+        )
+        if sent:
+            return True
+    member = await get_guild_member(guild, player.user_id)
+    return bool(member and await send_private(member, message, view))
+
+
+def role_chat_players(game: MafiaGame, role: Role) -> list[Player]:
+    if role == Role.MAFIA:
+        return [player for player in game.alive_players() if game.is_known_mafia_team(player)]
+    return [player for player in game.alive_players() if player.role == role]
+
+
+def anonymous_role_status_players(running: RunningGame, role: Role) -> list[Player]:
+    granted_ids = {
+        user_id
+        for (user_id, granted_role) in running.anonymous_role_input_channel_ids
+        if granted_role == role
+    }
+    players: list[Player] = []
+    for player in running.game.alive_players():
+        if running.game.is_frog(player):
+            continue
+        if player.user_id in granted_ids:
+            players.append(player)
+        elif role == Role.MAFIA and running.game.is_known_mafia_team(player):
+            players.append(player)
+        elif role == Role.CULT_LEADER and running.game.is_cult_team(player):
+            players.append(player)
+        elif player.role == role:
+            players.append(player)
+    return sorted({player.user_id: player for player in players}.values(), key=lambda item: item.name.casefold())
+
+
+def anonymous_role_status_text(running: RunningGame, role: Role) -> str:
+    players = anonymous_role_status_players(running, role)
+    if not players:
+        return "현재 생존: 없음"
+    names = ", ".join(running.anonymous_aliases.get(player.user_id, player.name) for player in players)
+    return f"현재 생존: {names}"
+
+
+async def upsert_anonymous_role_status_message(
+    channel: discord.TextChannel,
+    running: RunningGame,
+    role: Role,
+    key: Role | tuple[int, Role],
+) -> None:
+    status_id = (
+        running.anonymous_role_status_message_ids.get(key)
+        if isinstance(key, Role)
+        else running.anonymous_role_input_status_message_ids.get(key)
+    )
+    embed = make_embed(
+        anonymous_role_status_text(running, role),
+        title=f"{role.value} 채팅 현황",
+        color=SUCCESS_EMBED_COLOR,
+    )
+    if status_id:
+        with suppress(discord.DiscordException):
+            message = await channel.fetch_message(status_id)
+            await message.edit(embed=embed)
+            return
+    with suppress(discord.DiscordException):
+        message = await channel.send(embed=embed)
+        if isinstance(key, Role):
+            running.anonymous_role_status_message_ids[key] = message.id
+        else:
+            running.anonymous_role_input_status_message_ids[key] = message.id
+
+
+async def sync_anonymous_role_statuses(
+    guild: discord.Guild,
+    running: RunningGame,
+    *,
+    update_messages: bool = True,
+) -> None:
+    if not running.anonymous_enabled:
+        return
+    for role in PRIVATE_CHAT_ROLES:
+        if not should_create_role_chat(running.game, role):
+            continue
+        topic = f"{role.value} 익명 채팅 | {anonymous_role_status_text(running, role)}"
+        for (user_id, input_role), input_id in list(running.anonymous_role_input_channel_ids.items()):
+            if input_role != role:
+                continue
+            input_channel = guild.get_channel(input_id)
+            if isinstance(input_channel, discord.TextChannel):
+                with suppress(discord.DiscordException):
+                    await input_channel.edit(topic=topic[:1024])
+                if update_messages:
+                    await upsert_anonymous_role_status_message(
+                        input_channel,
+                        running,
+                        role,
+                        (user_id, input_role),
+                    )
+
+
+def should_create_role_chat(game: MafiaGame, role: Role) -> bool:
+    if role == Role.MAFIA:
+        return any(player.role == Role.MAFIA for player in game.players) or any(
+            player.role in MAFIA_SPECIAL_ROLES for player in game.players
+        )
+    return any(player.role == role for player in game.players)
+
+
+async def set_anonymous_role_access(
+    guild: discord.Guild,
+    running: RunningGame,
+    role: Role,
+    player: Player,
+    *,
+    can_access: bool,
+    reason: str,
+) -> None:
+    member = await get_guild_member(guild, player.user_id)
+    if not member:
+        return
+
+    input_id = running.anonymous_role_input_channel_ids.get((player.user_id, role))
+    input_channel = guild.get_channel(input_id) if input_id else None
+    if can_access and not isinstance(input_channel, discord.TextChannel):
+        source_channel = guild.get_channel(running.channel_id)
+        category = source_channel_category(source_channel) if source_channel else None
+        alias = running.anonymous_aliases.get(player.user_id, str(player.user_id))
+        input_overwrites = anonymous_base_overwrites(
+            guild,
+            participant_can_view=False,
+            participant_can_chat=False,
+            default_can_view=False,
+            default_can_chat=False,
+        )
+        input_overwrites[member] = anonymous_input_overwrite(True, True)
+        input_channel = await create_text_channel_safe(
+            guild,
+            name=f"{sanitize_channel_part(alias)}-{sanitize_channel_part(role.value)}-채팅",
+            overwrites=input_overwrites,
+            category=category,
+            reason="마피아 게임 익명 역할 입력 채널 생성",
+            slowmode_delay=0,
+        )
+        if isinstance(input_channel, discord.TextChannel):
+            running.anonymous_role_input_channel_ids[(player.user_id, role)] = input_channel.id
+            running.anonymous_role_input_channels[input_channel.id] = (player.user_id, role)
+            await send_embed(
+                input_channel,
+                f"{role.value} 역할 개인 채팅 채널입니다.\n"
+                "여기에 쓰면 같은 역할의 개인 채팅방에 익명으로 전달됩니다.\n"
+                "이 채널 하나에서 역할 대화와 밤 행동을 처리하세요.",
+                title="익명 역할 입력",
+                color=SUCCESS_EMBED_COLOR,
+            )
+    elif isinstance(input_channel, discord.TextChannel):
+        if input_channel.slowmode_delay:
+            with suppress(discord.DiscordException):
+                await input_channel.edit(
+                    slowmode_delay=0,
+                    reason="마피아 게임 역할 채팅방 슬로우모드 해제",
+                )
+        with suppress(discord.DiscordException):
+            await input_channel.set_permissions(
+                member,
+                overwrite=anonymous_input_overwrite(can_access, can_access),
+                reason=reason,
+            )
+
+
+async def set_anonymous_role_view_only(
+    guild: discord.Guild,
+    running: RunningGame,
+    role: Role,
+    player: Player,
+    *,
+    can_view: bool,
+    reason: str,
+) -> None:
+    member = await get_guild_member(guild, player.user_id)
+    if not member:
+        return
+
+    input_id = running.anonymous_role_input_channel_ids.get((player.user_id, role))
+    input_channel = guild.get_channel(input_id) if input_id else None
+    if can_view and not isinstance(input_channel, discord.TextChannel):
+        source_channel = guild.get_channel(running.channel_id)
+        category = source_channel_category(source_channel) if source_channel else None
+        alias = running.anonymous_aliases.get(player.user_id, str(player.user_id))
+        input_overwrites = anonymous_base_overwrites(
+            guild,
+            participant_can_view=False,
+            participant_can_chat=False,
+            default_can_view=False,
+            default_can_chat=False,
+        )
+        input_overwrites[member] = anonymous_input_overwrite(True, False)
+        input_channel = await create_text_channel_safe(
+            guild,
+            name=f"{sanitize_channel_part(alias)}-{sanitize_channel_part(role.value)}-채팅",
+            overwrites=input_overwrites,
+            category=category,
+            reason="마피아 게임 익명 역할 보기 전용 채널 생성",
+            slowmode_delay=0,
+        )
+        if isinstance(input_channel, discord.TextChannel):
+            running.anonymous_role_input_channel_ids[(player.user_id, role)] = input_channel.id
+            running.anonymous_role_input_channels[input_channel.id] = (player.user_id, role)
+            await send_embed(
+                input_channel,
+                f"{role.value} 역할 보기 전용 채널입니다.\n"
+                "이 채널에서 역할 대화를 확인할 수 있습니다.",
+                title="익명 역할 채팅",
+                color=SUCCESS_EMBED_COLOR,
+            )
+    elif isinstance(input_channel, discord.TextChannel):
+        if input_channel.slowmode_delay:
+            with suppress(discord.DiscordException):
+                await input_channel.edit(
+                    slowmode_delay=0,
+                    reason="마피아 게임 역할 채팅방 슬로우모드 해제",
+                )
+        with suppress(discord.DiscordException):
+            await input_channel.set_permissions(
+                member,
+                overwrite=anonymous_input_overwrite(can_view, False),
+                reason=reason,
+            )
+
+
+async def create_anonymous_role_channels(
+    guild: discord.Guild,
+    channel: discord.abc.Messageable,
+    running: RunningGame,
+) -> None:
+    failed_roles: list[str] = []
+    for role in PRIVATE_CHAT_ROLES:
+        if not should_create_role_chat(running.game, role):
+            continue
+        before_count = len(running.anonymous_role_input_channel_ids)
+        for player in role_chat_players(running.game, role):
+            await set_anonymous_role_access(
+                guild,
+                running,
+                role,
+                player,
+                can_access=True,
+                reason="마피아 게임 익명 역할 채팅 권한 부여",
+            )
+        if len(running.anonymous_role_input_channel_ids) == before_count and role_chat_players(running.game, role):
+            failed_roles.append(role.value)
+    await sync_anonymous_role_statuses(guild, running, update_messages=False)
+    if failed_roles:
+        await send_embed(
+            channel,
+            "익명 역할 개인 채팅방 생성 실패: " + ", ".join(failed_roles),
+            color=ERROR_EMBED_COLOR,
+        )
+
+
 async def create_private_role_channels(
     guild: discord.Guild,
     channel: discord.abc.Messageable,
     running: RunningGame,
 ) -> None:
+    if running.anonymous_enabled:
+        await create_anonymous_role_channels(guild, channel, running)
+        return
+
     category = source_channel_category(channel)
     failed_roles: list[str] = []
     participant_role = get_participant_role(guild)
@@ -2067,6 +3625,7 @@ async def create_private_role_channels(
                 overwrites=overwrites,
                 category=category,
                 reason="마피아 게임 역할별 비공개 채팅방 생성",
+                slowmode_delay=0,
             )
         except discord.DiscordException:
             try:
@@ -2074,6 +3633,7 @@ async def create_private_role_channels(
                     name=PRIVATE_CHANNEL_NAMES[role],
                     overwrites=overwrites,
                     reason="마피아 게임 역할별 비공개 채팅방 생성",
+                    slowmode_delay=0,
                 )
             except discord.DiscordException:
                 failed_roles.append(role.value)
@@ -2116,7 +3676,7 @@ async def create_dead_chat_channel(
     if participant_role:
         overwrites[participant_role] = dead_channel_overwrite(False, False)
     if dead_role:
-        overwrites[dead_role] = dead_channel_overwrite(True, True)
+        overwrites[dead_role] = dead_channel_overwrite(True, not running.anonymous_enabled)
     if manager_role:
         overwrites[manager_role] = dead_channel_overwrite(False, False)
     if bot_member:
@@ -2155,10 +3715,110 @@ async def create_dead_chat_channel(
     await send_embed(
         dead_channel,
         "사망자 전용 채팅방입니다.\n"
-        "죽은 참가자는 이곳에서 대화할 수 있습니다.\n"
-        "영매는 이 채팅을 볼 수 있고 밤에는 대화할 수 있습니다.\n"
+        + (
+            "익명 모드에서는 사망자 대화도 각자의 개인 익명 채널끼리만 전달됩니다.\n"
+            "이 채널은 사망자와 영매 상태를 확인하는 안내용으로 사용됩니다.\n"
+            if running.anonymous_enabled
+            else "죽은 참가자는 이곳에서 대화할 수 있습니다.\n"
+        )
+        + "영매는 이 채팅을 볼 수 있고 밤에는 대화할 수 있습니다.\n"
         "성불된 사망자는 이 채널에서 채팅할 수 없습니다.",
         title="사망자 채팅방",
+        color=SUCCESS_EMBED_COLOR,
+    )
+    await upsert_dead_chat_status(guild, running)
+
+
+def dead_chat_status_text(running: RunningGame) -> str:
+    has_shaman = any(player.role == Role.SHAMAN for player in running.game.players)
+    alive_shaman = [
+        player
+        for player in running.game.alive_players()
+        if player.role == Role.SHAMAN and not running.game.is_frog(player)
+    ]
+    if not has_shaman:
+        return (
+            "영매 여부: 없음\n"
+            "사망자는 사망자끼리만 대화할 수 있습니다."
+        )
+    return (
+        "영매 여부: 있음\n"
+        f"현재 접신 가능 영매: {'있음' if alive_shaman else '없음'}\n"
+        "생존한 영매는 낮에는 사망자 대화를 읽을 수 있고, 밤에는 사망자와 대화할 수 있습니다."
+    )
+
+
+async def upsert_dead_chat_status(guild: discord.Guild, running: RunningGame) -> None:
+    if running.dead_channel_id is None:
+        return
+    channel = guild.get_channel(running.dead_channel_id)
+    if not isinstance(channel, discord.TextChannel):
+        return
+    embed = make_embed(
+        dead_chat_status_text(running),
+        title="사망자 채팅 상태",
+        color=SUCCESS_EMBED_COLOR,
+    )
+    if running.dead_status_message_id:
+        with suppress(discord.DiscordException):
+            message = await channel.fetch_message(running.dead_status_message_id)
+            await message.edit(embed=embed)
+            return
+    with suppress(discord.DiscordException):
+        message = await channel.send(embed=embed)
+        running.dead_status_message_id = message.id
+
+
+async def create_frog_chat_channel(
+    guild: discord.Guild,
+    channel: discord.abc.Messageable,
+    running: RunningGame,
+) -> None:
+    if not any(player.role == Role.WITCH for player in running.game.players):
+        return
+    category = source_channel_category(channel)
+    participant_role = get_participant_role(guild)
+    manager_role = discord.utils.get(guild.roles, name=config.manager_role)
+    bot_member = guild.me or (guild.get_member(bot.user.id) if bot.user else None)
+
+    overwrites: dict[discord.abc.Snowflake, discord.PermissionOverwrite] = {
+        guild.default_role: dead_channel_overwrite(False, False),
+    }
+    if participant_role:
+        overwrites[participant_role] = dead_channel_overwrite(False, False)
+    if manager_role:
+        overwrites[manager_role] = dead_channel_overwrite(False, False)
+    if bot_member:
+        overwrites[bot_member] = dead_channel_overwrite(True, True)
+
+    try:
+        frog_channel = await guild.create_text_channel(
+            name=FROG_CHAT_CHANNEL_NAME,
+            overwrites=overwrites,
+            category=category,
+            reason="마피아 게임 개구리 채팅방 생성",
+        )
+    except discord.DiscordException:
+        try:
+            frog_channel = await guild.create_text_channel(
+                name=FROG_CHAT_CHANNEL_NAME,
+                overwrites=overwrites,
+                reason="마피아 게임 개구리 채팅방 생성",
+            )
+        except discord.DiscordException:
+            await send_embed(
+                channel,
+                "개구리 채팅방 생성에 실패했습니다. 봇에게 채널 관리 권한이 있는지 확인하세요.",
+                color=ERROR_EMBED_COLOR,
+            )
+            return
+
+    running.frog_channel_id = frog_channel.id
+    await send_embed(
+        frog_channel,
+        "개구리 전용 채팅방입니다.\n"
+        "저주에 걸린 참가자가 이곳에 쓴 말은 게임 채널에 개굴 소리로 전달됩니다.",
+        title="개구리 채팅방",
         color=SUCCESS_EMBED_COLOR,
     )
 
@@ -2184,8 +3844,93 @@ async def set_dead_channel_member_access(
     try:
         await channel.set_permissions(
             member,
+            overwrite=dead_channel_overwrite(can_view, can_chat and not running.anonymous_enabled),
+            reason=reason,
+        )
+    except discord.DiscordException:
+        pass
+    if running.anonymous_enabled:
+        await set_anonymous_general_input_access(
+            guild,
+            running,
+            player,
+            can_chat=can_chat,
+            reason=reason,
+        )
+    await upsert_dead_chat_status(guild, running)
+
+
+async def set_frog_channel_member_access(
+    guild: discord.Guild,
+    running: RunningGame,
+    player: Player,
+    *,
+    can_view: bool,
+    can_chat: bool,
+    reason: str,
+) -> None:
+    if running.frog_channel_id is None:
+        return
+    channel = guild.get_channel(running.frog_channel_id)
+    if not isinstance(channel, discord.TextChannel):
+        running.frog_channel_id = None
+        return
+    member = await get_guild_member(guild, player.user_id)
+    if not member:
+        return
+    try:
+        await channel.set_permissions(
+            member,
             overwrite=dead_channel_overwrite(can_view, can_chat),
             reason=reason,
+        )
+    except discord.DiscordException:
+        return
+
+
+async def set_frog_game_channel_permission(
+    guild: discord.Guild,
+    running: RunningGame,
+    player: Player,
+    *,
+    can_chat: bool,
+    reason: str,
+) -> None:
+    channel = guild.get_channel(running.channel_id)
+    if not isinstance(channel, discord.abc.Messageable) or not supports_member_overwrites(channel):
+        return
+    member = await get_guild_member(guild, player.user_id)
+    if not member:
+        return
+    if member.id not in running.frog_game_channel_overwrites:
+        running.frog_game_channel_overwrites[member.id] = clone_overwrite(channel.overwrites.get(member))
+    overwrite = channel.overwrites_for(member)
+    set_chat_values(overwrite, can_chat)
+    try:
+        await channel.set_permissions(member, overwrite=overwrite, reason=reason)
+    except discord.DiscordException:
+        return
+
+
+async def restore_frog_game_channel_permission(
+    guild: discord.Guild,
+    running: RunningGame,
+    player: Player,
+) -> None:
+    channel = guild.get_channel(running.channel_id)
+    if not isinstance(channel, discord.abc.Messageable) or not supports_member_overwrites(channel):
+        running.frog_game_channel_overwrites.pop(player.user_id, None)
+        return
+    member = await get_guild_member(guild, player.user_id)
+    if not member:
+        running.frog_game_channel_overwrites.pop(player.user_id, None)
+        return
+    original = running.frog_game_channel_overwrites.pop(member.id, None)
+    try:
+        await channel.set_permissions(
+            member,
+            overwrite=clone_overwrite(original),
+            reason="마피아 게임 개구리 저주 종료로 채팅 권한 복구",
         )
     except discord.DiscordException:
         return
@@ -2208,6 +3953,37 @@ async def sync_dead_channel_shaman_permissions(
             can_chat=can_chat,
             reason="마피아 게임 영매 접신 권한 갱신",
         )
+    await upsert_dead_chat_status(guild, running)
+
+
+async def disable_anonymous_channels_for_player(
+    guild: discord.Guild,
+    running: RunningGame,
+    player: Player,
+) -> None:
+    member = await get_guild_member(guild, player.user_id)
+    if not member:
+        return
+    input_id = running.anonymous_input_channel_ids.get(player.user_id)
+    input_channel = guild.get_channel(input_id) if input_id else None
+    if isinstance(input_channel, discord.TextChannel):
+        can_dead_chat = (not player.alive) and player.user_id not in running.game.purified_dead_ids
+        with suppress(discord.DiscordException):
+            await input_channel.set_permissions(
+                member,
+                overwrite=anonymous_input_overwrite(True, can_dead_chat),
+                reason="마피아 게임 익명 채팅 권한 제거",
+            )
+    for role in PRIVATE_CHAT_ROLES:
+        await set_anonymous_role_access(
+            guild,
+            running,
+            role,
+            player,
+            can_access=False,
+            reason="마피아 게임 익명 역할 채팅 권한 제거",
+        )
+    await sync_anonymous_role_statuses(guild, running)
 
 
 async def disable_private_role_channel_for_player(
@@ -2215,6 +3991,10 @@ async def disable_private_role_channel_for_player(
     running: RunningGame,
     player: Player,
 ) -> None:
+    if running.anonymous_enabled:
+        await disable_anonymous_channels_for_player(guild, running, player)
+        return
+
     member = await get_guild_member(guild, player.user_id)
     if not member:
         return
@@ -2265,6 +4045,18 @@ async def add_player_to_private_role_channel(
     channel_role: Role,
     player: Player,
 ) -> None:
+    if running.anonymous_enabled:
+        await set_anonymous_role_access(
+            guild,
+            running,
+            channel_role,
+            player,
+            can_access=player.alive and not running.game.is_frog(player),
+            reason="마피아 게임 익명 역할 채팅 권한 부여",
+        )
+        await sync_anonymous_role_statuses(guild, running)
+        return
+
     if not player.alive:
         await disable_private_role_channel_for_player(guild, running, player)
         return
@@ -2288,6 +4080,126 @@ async def add_player_to_private_role_channel(
         return
 
 
+async def set_player_private_channel_access(
+    guild: discord.Guild,
+    running: RunningGame,
+    channel_role: Role,
+    player: Player,
+    *,
+    can_chat: bool,
+    reason: str,
+) -> None:
+    if running.anonymous_enabled:
+        await set_anonymous_role_access(
+            guild,
+            running,
+            channel_role,
+            player,
+            can_access=can_chat,
+            reason=reason,
+        )
+        await sync_anonymous_role_statuses(guild, running)
+        return
+
+    channel_id = running.private_channel_ids.get(channel_role)
+    if not channel_id:
+        return
+    channel = guild.get_channel(channel_id)
+    if not isinstance(channel, discord.TextChannel):
+        return
+    member = await get_guild_member(guild, player.user_id)
+    if not member:
+        return
+    try:
+        await channel.set_permissions(
+            member,
+            overwrite=private_channel_overwrite(can_chat),
+            reason=reason,
+        )
+    except discord.DiscordException:
+        return
+
+
+async def sync_cult_team_channel_access(
+    guild: discord.Guild,
+    running: RunningGame,
+) -> None:
+    if not any(player.role in {Role.CULT_LEADER, Role.FANATIC} for player in running.game.players):
+        return
+
+    role = Role.CULT_LEADER
+    reason = "마피아 게임 교주팀 채팅 권한 갱신"
+    if running.anonymous_enabled:
+        for player in running.game.players:
+            can_view = player.alive and not running.game.is_frog(player) and running.game.is_cult_team(player)
+            if can_view and player.role == Role.CULT_LEADER:
+                await set_anonymous_role_access(
+                    guild,
+                    running,
+                    role,
+                    player,
+                    can_access=True,
+                    reason=reason,
+                )
+            else:
+                await set_anonymous_role_view_only(
+                    guild,
+                    running,
+                    role,
+                    player,
+                    can_view=can_view,
+                    reason=reason,
+                )
+        await sync_anonymous_role_statuses(guild, running)
+        return
+
+    channel_id = running.private_channel_ids.get(role)
+    channel = guild.get_channel(channel_id) if channel_id else None
+    if not isinstance(channel, discord.TextChannel):
+        return
+
+    for player in running.game.players:
+        member = await get_guild_member(guild, player.user_id)
+        if not member:
+            continue
+        can_view = player.alive and not running.game.is_frog(player) and running.game.is_cult_team(player)
+        can_chat = can_view and player.role == Role.CULT_LEADER
+        with suppress(discord.DiscordException):
+            await channel.set_permissions(
+                member,
+                overwrite=dead_channel_overwrite(can_view, can_chat),
+                reason=reason,
+            )
+
+
+async def refresh_player_private_channel_access(
+    guild: discord.Guild,
+    running: RunningGame,
+    player: Player,
+) -> None:
+    if not player.alive or running.game.is_frog(player):
+        await disable_private_role_channel_for_player(guild, running, player)
+        return
+    if running.anonymous_enabled:
+        member = await get_guild_member(guild, player.user_id)
+        input_id = running.anonymous_input_channel_ids.get(player.user_id)
+        input_channel = guild.get_channel(input_id) if input_id else None
+        if member and isinstance(input_channel, discord.TextChannel):
+            with suppress(discord.DiscordException):
+                await input_channel.set_permissions(
+                    member,
+                    overwrite=anonymous_input_overwrite(
+                        True,
+                        running.game.phase == Phase.DAY and not running.game.is_frog(player),
+                    ),
+                    reason="마피아 게임 익명 채팅 권한 복구",
+                )
+    if player.role in PRIVATE_CHAT_ROLES:
+        await add_player_to_private_role_channel(guild, running, player.role, player)
+    if running.game.is_known_mafia_team(player):
+        await add_player_to_private_role_channel(guild, running, Role.MAFIA, player)
+
+
 async def delete_private_role_channels(guild: discord.Guild, running: RunningGame) -> None:
     for role, channel_id in list(running.private_channel_ids.items()):
         channel = guild.get_channel(channel_id)
@@ -2297,6 +4209,31 @@ async def delete_private_role_channels(guild: discord.Guild, running: RunningGam
             except discord.DiscordException:
                 continue
         running.private_channel_ids.pop(role, None)
+
+
+async def delete_anonymous_chat_channels(guild: discord.Guild, running: RunningGame) -> None:
+    channel_ids: set[int] = set()
+    if running.anonymous_public_channel_id is not None:
+        channel_ids.add(running.anonymous_public_channel_id)
+    channel_ids.update(running.anonymous_input_channel_ids.values())
+    channel_ids.update(running.anonymous_role_input_channel_ids.values())
+
+    for channel_id in channel_ids:
+        channel = guild.get_channel(channel_id)
+        if channel:
+            with suppress(discord.DiscordException):
+                await channel.delete(reason="마피아 게임 종료로 익명 채팅방 삭제")
+
+    running.anonymous_public_channel_id = None
+    running.anonymous_input_channel_ids.clear()
+    running.anonymous_input_channel_owners.clear()
+    running.anonymous_role_input_channel_ids.clear()
+    running.anonymous_role_input_channels.clear()
+    running.anonymous_role_status_message_ids.clear()
+    running.anonymous_role_input_status_message_ids.clear()
+    running.anonymous_aliases.clear()
+    running.anonymous_original_names.clear()
+    running.anonymous_webhook_urls.clear()
 
 
 async def delete_dead_chat_channel(guild: discord.Guild, running: RunningGame) -> None:
@@ -2309,16 +4246,69 @@ async def delete_dead_chat_channel(guild: discord.Guild, running: RunningGame) -
         except discord.DiscordException:
             return
     running.dead_channel_id = None
+    running.dead_status_message_id = None
+
+
+async def delete_frog_chat_channel(guild: discord.Guild, running: RunningGame) -> None:
+    if running.frog_channel_id is None:
+        return
+    channel = guild.get_channel(running.frog_channel_id)
+    if channel:
+        try:
+            await channel.delete(reason="마피아 게임 종료로 개구리 채팅방 삭제")
+        except discord.DiscordException:
+            return
+    running.frog_channel_id = None
+
+
+async def warm_anonymous_startup_resources(guild_id: int, running: RunningGame) -> None:
+    await asyncio.sleep(5)
+    guild = bot.get_guild(guild_id)
+    if not guild or games.get(running.guild_id) is not running or not running.anonymous_enabled:
+        return
+
+    await sync_anonymous_role_statuses(guild, running)
+
+    channel_ids: list[int] = []
+    channel_ids.extend(running.anonymous_input_channel_ids.values())
+    channel_ids.extend(running.anonymous_role_input_channel_ids.values())
+    seen: set[int] = set()
+    for channel_id in channel_ids:
+        if channel_id in seen:
+            continue
+        seen.add(channel_id)
+        if games.get(running.guild_id) is not running or not running.anonymous_enabled:
+            return
+        channel = guild.get_channel(channel_id)
+        if isinstance(channel, discord.TextChannel):
+            await prepare_anonymous_webhook(channel, running)
+            await asyncio.sleep(0.05)
+
+
+async def restore_all_frog_game_channel_permissions(
+    guild: discord.Guild,
+    running: RunningGame,
+) -> None:
+    for user_id in list(running.frog_game_channel_overwrites):
+        player = running.game.get_player(user_id)
+        if player:
+            await restore_frog_game_channel_permission(guild, running, player)
+        else:
+            running.frog_game_channel_overwrites.pop(user_id, None)
 
 
 async def cleanup_game(guild: discord.Guild, running: RunningGame) -> None:
+    await restore_all_frog_game_channel_permissions(guild, running)
     await restore_member_channel_chat(guild, running)
+    await restore_original_game_channel_for_anonymous(guild, running)
     await restore_game_channel_chat(guild, running)
     await restore_channel_slowmode(guild, running)
     await remove_game_participant_roles(guild, running)
     await remove_game_dead_player_roles(guild, running)
     await delete_private_role_channels(guild, running)
+    await delete_anonymous_chat_channels(guild, running)
     await delete_dead_chat_channel(guild, running)
+    await delete_frog_chat_channel(guild, running)
 
 
 async def game_loop(guild: discord.Guild, running: RunningGame) -> None:
@@ -2328,18 +4318,43 @@ async def game_loop(guild: discord.Guild, running: RunningGame) -> None:
         return
 
     try:
+        original_channel = channel
+        await create_anonymous_chat_channels(guild, original_channel, running)
+        channel = game_display_channel(guild, running, original_channel)
+        await hide_original_game_channel_for_anonymous(guild, original_channel, running)
         await create_private_role_channels(guild, channel, running)
+        await sync_cult_team_channel_access(guild, running)
         await create_dead_chat_channel(guild, channel, running)
-        await send_embed(channel, public_game_settings_text(running.game, "게임 방 설정입니다."), title="방 설정")
-        await send_embed(channel, game_rule_text(running.game, running.reveal_death_roles), title="게임 설명")
-        await channel.send(embed=make_role_guide_embed(running.game, title="역할 설명"))
-        await send_roles(guild, running)
-        await send_embed(
+        await create_frog_chat_channel(guild, channel, running)
+        await send_game_embed(
+            guild,
             channel,
-            "역할 배정이 끝났습니다. 각자 DM과 역할별 비공개 채널을 확인하세요.",
+            running,
+            public_game_settings_text(running.game, "게임 방 설정입니다."),
+            title="방 설정",
+            broadcast=not running.anonymous_enabled,
+        )
+        await send_game_embed(
+            guild,
+            channel,
+            running,
+            game_rule_text(running.game, running.reveal_death_roles),
+            title="게임 설명",
+            broadcast=not running.anonymous_enabled,
+        )
+        await send_roles(guild, running)
+        await send_game_embed(
+            guild,
+            channel,
+            running,
+            "역할 배정이 끝났습니다. 각자 비밀 메시지와 역할별 비공개 채널을 확인하세요.",
             title="역할 배정 완료",
             color=SUCCESS_EMBED_COLOR,
+            broadcast=not running.anonymous_enabled,
         )
+        if running.anonymous_enabled:
+            asyncio.create_task(warm_anonymous_startup_resources(guild.id, running))
+        await upsert_game_status(guild, running)
 
         while running.game.phase != Phase.ENDED:
             await run_night(guild, channel, running)
@@ -2359,6 +4374,7 @@ async def game_loop(guild: discord.Guild, running: RunningGame) -> None:
                 config.chat_slowmode_seconds,
                 "마피아 게임 낮 토론 슬로우모드 적용",
             )
+            await upsert_game_status(guild, running)
             day_result = await run_day_discussion(channel, running)
             if day_result == "stop":
                 break
@@ -2369,6 +4385,16 @@ async def game_loop(guild: discord.Guild, running: RunningGame) -> None:
                 break
     except asyncio.CancelledError:
         return
+    except Exception as error:
+        print(f"Game loop error: {error!r}")
+        with suppress(discord.DiscordException):
+            await send_embed(
+                original_channel,
+                "게임 시작 중 오류가 발생해 자동 정리했습니다.\n"
+                f"오류: `{type(error).__name__}: {error}`",
+                title="게임 시작 오류",
+                color=ERROR_EMBED_COLOR,
+            )
     finally:
         await cleanup_game(guild, running)
         if games.get(running.guild_id) is running:
@@ -2381,6 +4407,7 @@ async def run_vote_phase(
     running: RunningGame,
 ) -> None:
     running.game.start_vote()
+    await upsert_game_status(guild, running)
     running.vote_complete_event.clear()
     alive = running.game.alive_players()
     await set_game_channel_chat(
@@ -2390,8 +4417,10 @@ async def run_vote_phase(
         participants_can_chat=False,
         reason="마피아 게임 투표 시작",
     )
-    await send_embed(
+    await send_game_embed(
+        guild,
         channel,
+        running,
         f"지목 투표를 시작합니다. {config.vote_seconds}초 안에 최후변론에 세울 사람을 선택하세요.\n"
         "투표 중에는 게임 채널 채팅이 비활성화됩니다.\n"
         "생존자가 모두 투표하면 남은 시간을 기다리지 않고 바로 정산합니다.",
@@ -2410,17 +4439,27 @@ async def run_vote_phase(
             message = "스킵이 최다 득표하여 최후변론 대상이 없습니다."
         else:
             message = "투표가 없어 최후변론 대상이 없습니다."
-        await send_embed(channel, f"{message}\n\n익명 투표 집계\n{vote_summary}", title="지목 투표 결과")
+        await send_game_embed(
+            guild,
+            channel,
+            running,
+            f"{message}\n\n익명 투표 집계\n{vote_summary}",
+            title="지목 투표 결과",
+        )
         return
 
-    await send_embed(
+    await send_game_embed(
+        guild,
         channel,
+        running,
         f"지목 투표 결과, {nominee.name} 님이 최후변론 대상이 되었습니다.\n\n익명 투표 집계\n{vote_summary}",
         title="지목 투표 결과",
     )
     await set_final_defense_mode(guild, channel, running, nominee)
-    await send_embed(
+    await send_game_embed(
+        guild,
         channel,
+        running,
         f"{nominee.name} 님의 최후변론 시간입니다. 20초 동안 지목된 사람만 말할 수 있습니다.\n"
         "이 시간 동안 슬로우모드는 해제됩니다.",
         title="최후변론",
@@ -2429,9 +4468,12 @@ async def run_vote_phase(
     await restore_member_channel_chat(guild, running)
 
     running.game.start_confirmation_vote()
+    await upsert_game_status(guild, running)
     running.confirm_complete_event.clear()
-    await send_embed(
+    await send_game_embed(
+        guild,
         channel,
+        running,
         f"{nominee.name} 님 처형 여부를 찬반투표합니다. {config.vote_seconds}초 안에 선택하세요.\n"
         "찬성이 반대보다 많으면 처형됩니다.",
         view=ConfirmVoteView(running.guild_id),
@@ -2448,12 +4490,25 @@ async def run_vote_phase(
 
     counts = confirm_result.vote_counts
     summary = f"찬성 {counts.get(True, 0)}표 / 반대 {counts.get(False, 0)}표"
+    judge_notice = ""
+    if confirm_result.decided_by_judge and confirm_result.judge:
+        if confirm_result.judge_choice is None:
+            judge_choice = "미투표(처형 없음)"
+        else:
+            judge_choice = "찬성" if confirm_result.judge_choice else "반대"
+        judge_notice = (
+            f"\n\n[판사 {confirm_result.judge.name}님이 투표 결과를 정했습니다]\n"
+            f"판사의 선택: {judge_choice}"
+        )
     if confirm_result.blocked_by_politician:
-        await send_embed(
+        await send_game_embed(
+            guild,
             channel,
+            running,
             f"찬반투표 결과, {nominee.name} 님은 **정치인** 입니다.\n"
             "[정치인은 투표로 죽지 않습니다]\n\n"
-            f"{nominee.name} 님은 처형되지 않고 밤으로 넘어갑니다.\n\n"
+            f"{nominee.name} 님은 처형되지 않고 밤으로 넘어갑니다."
+            f"{judge_notice}\n\n"
             f"찬반투표 집계\n{summary}",
             title="찬반투표 결과",
             color=WARNING_EMBED_COLOR,
@@ -2472,7 +4527,17 @@ async def run_vote_phase(
                 can_chat=killed.user_id not in running.game.purified_dead_ids,
                 reason="마피아 게임 사망자 채팅방 권한 부여",
             )
+            await remove_frog_permissions(guild, running, killed)
             await disable_private_role_channel_for_player(guild, running, killed)
+            if killed.role == Role.SCIENTIST and killed.user_id in running.game.scientist_contacted:
+                await set_player_private_channel_access(
+                    guild,
+                    running,
+                    Role.MAFIA,
+                    killed,
+                    can_chat=True,
+                    reason="마피아 게임 과학자 유착으로 마피아 채널 권한 부여",
+                )
             line = f"- {killed.name}: {death_role_text(running, killed)}"
             if removed_role:
                 line += f" '{config.participant_role}' 역할을 제거했습니다."
@@ -2489,25 +4554,44 @@ async def run_vote_phase(
                 line += f" '{DEAD_PLAYER_ROLE}' 역할 부여에 실패했습니다."
             killed_lines.append(line)
         await sync_dead_players_private_role_channels(guild, running)
+        await sync_cult_team_channel_access(guild, running)
+        await upsert_game_status(guild, running)
 
         message = f"찬반투표 결과, {confirm_result.executed.name} 님이 처형되었습니다."
         if confirm_result.extra_killed:
-            message += "\n처형 대상이 지목하고 있던 시민팀이 아닌 대상도 함께 사망했습니다."
-        await send_embed(
+            if confirm_result.executed.role == Role.TERRORIST:
+                message += "\n테러리스트의 [산화]가 발동해 지목 중이던 적 팀도 함께 사망했습니다."
+            else:
+                message += "\n처형 대상이 지목하고 있던 시민팀이 아닌 대상도 함께 사망했습니다."
+        await send_game_embed(
+            guild,
             channel,
-            f"{message}\n\n사망자\n" + "\n".join(killed_lines) + f"\n\n찬반투표 집계\n{summary}",
+            running,
+            f"{message}\n\n사망자\n"
+            + "\n".join(killed_lines)
+            + f"{judge_notice}\n\n찬반투표 집계\n{summary}",
             title="찬반투표 결과",
+            include_dead=True,
         )
     elif confirm_result.tied:
-        await send_embed(
+        await send_game_embed(
+            guild,
             channel,
-            f"찬반투표가 동률이라 처형하지 않습니다.\n\n찬반투표 집계\n{summary}",
+            running,
+            f"찬반투표가 동률이라 처형하지 않습니다.{judge_notice}\n\n찬반투표 집계\n{summary}",
             title="찬반투표 결과",
         )
     else:
-        await send_embed(
+        reject_message = (
+            "판사의 선택으로 처형하지 않습니다."
+            if confirm_result.decided_by_judge
+            else "반대가 많아 처형하지 않습니다."
+        )
+        await send_game_embed(
+            guild,
             channel,
-            f"반대가 많아 처형하지 않습니다.\n\n찬반투표 집계\n{summary}",
+            running,
+            f"{reject_message}{judge_notice}\n\n찬반투표 집계\n{summary}",
             title="찬반투표 결과",
         )
 
@@ -2518,6 +4602,7 @@ async def set_final_defense_mode(
     running: RunningGame,
     nominee: Player,
 ) -> None:
+    running.final_defense_user_id = nominee.user_id
     await set_game_channel_chat(
         guild,
         channel,
@@ -2525,36 +4610,114 @@ async def set_final_defense_mode(
         participants_can_chat=False,
         reason="마피아 게임 최후변론 시작",
     )
-    await set_member_chat_permission(
-        guild,
-        channel,
-        running,
-        nominee,
-        True,
-        "마피아 게임 최후변론 대상 발언 허용",
-    )
+    if not running.game.is_frog(nominee):
+        await set_member_chat_permission(
+            guild,
+            channel,
+            running,
+            nominee,
+            True,
+            "마피아 게임 최후변론 대상 발언 허용",
+        )
     await set_channel_slowmode(channel, running, 0, "마피아 게임 최후변론 슬로우모드 해제")
+
+
+async def send_hacker_day_actions(
+    channel: discord.abc.Messageable,
+    running: RunningGame,
+) -> None:
+    guild = bot.get_guild(running.guild_id)
+    if not guild:
+        return
+    failed_names: list[str] = []
+    for actor in running.game.hacker_day_actors():
+        targets = [
+            player
+            for player in sorted(running.game.alive_players(), key=lambda item: item.name.casefold())
+            if player.user_id != actor.user_id
+        ]
+        sent = await send_player_secret(
+            guild,
+            running,
+            actor,
+            "해커 낮 행동을 선택하세요.\n"
+            "해킹은 1회용입니다. 선택한 대상의 직업은 밤이 시작될 때 비밀 메시지로 전달됩니다.\n"
+            "해킹 사용 후 자신에게 쓰이는 능력은 해킹 대상에게 우회됩니다.",
+            HackerDayActionView(running.guild_id, actor, targets),
+        )
+        if not sent:
+            failed_names.append(actor.name)
+    if failed_names:
+        await send_embed(
+            channel,
+            "해커 낮 행동 DM을 보낼 수 없는 참가자: " + ", ".join(failed_names),
+            color=ERROR_EMBED_COLOR,
+        )
+
+
+async def send_vigilante_day_actions(
+    channel: discord.abc.Messageable,
+    running: RunningGame,
+) -> None:
+    guild = bot.get_guild(running.guild_id)
+    if not guild:
+        return
+    failed_names: list[str] = []
+    for actor in running.game.vigilante_day_actors():
+        targets = [
+            player
+            for player in sorted(running.game.alive_players(), key=lambda item: item.name.casefold())
+            if player.user_id != actor.user_id
+        ]
+        sent = await send_player_secret(
+            guild,
+            running,
+            actor,
+            "자경단원 낮 행동을 선택하세요.\n"
+            "숙청 조사는 1회용입니다. 밤이 시작될 때 대상이 마피아팀인지 비밀 메시지로 전달됩니다.\n"
+            "숙청 처형은 밤에 확실하게 알고 있는 마피아팀에게 한 번만 시도할 수 있습니다.",
+            VigilanteDayActionView(running.guild_id, actor, targets),
+        )
+        if not sent:
+            failed_names.append(actor.name)
+    if failed_names:
+        await send_embed(
+            channel,
+            "자경단원 낮 행동 DM을 보낼 수 없는 참가자: " + ", ".join(failed_names),
+            color=ERROR_EMBED_COLOR,
+        )
 
 
 async def run_day_discussion(
     channel: discord.abc.Messageable,
     running: RunningGame,
 ) -> DayDiscussionResult:
+    guild = bot.get_guild(running.guild_id)
     running.day_vote_event.clear()
     discussion_seconds = config.discussion_seconds
     discussion_time = duration_text(discussion_seconds)
     alive_user_ids = {player.user_id for player in running.game.alive_players()}
     vote_view = DaySkipToVoteView(running.guild_id, alive_user_ids)
-    day_message = await send_embed(
-        channel,
+    await send_hacker_day_actions(channel, running)
+    await send_vigilante_day_actions(channel, running)
+    day_message_text = (
         f"{running.game.day_number}일차 낮입니다. {discussion_time} 동안 자유롭게 토론하세요.\n"
         "생존자 과반이 `바로 투표`를 누르면 토론과 연장을 끝내고 바로 지목 투표로 넘어갑니다.\n"
         f"시간이 지나면 {DAY_EXTENSION_VOTE_SECONDS}초 동안 1분 연장 투표가 열립니다. "
         "생존자 과반수가 연장을 누르면 1분 연장되고, 아니면 바로 투표로 넘어갑니다.\n"
-        f"{running.game.public_status()}",
-        view=vote_view,
-        title="낮 토론",
+        f"{running.game.public_status()}"
     )
+    if guild:
+        day_message = await send_game_embed(
+            guild,
+            channel,
+            running,
+            day_message_text,
+            view=vote_view,
+            title="낮 토론",
+        )
+    else:
+        day_message = await send_embed(channel, day_message_text, view=vote_view, title="낮 토론")
 
     while running.game.phase == Phase.DAY and games.get(running.guild_id) is running:
         if await wait_for_day_vote_or_timeout(running, discussion_seconds):
@@ -2566,16 +4729,29 @@ async def run_day_discussion(
 
         alive_user_ids = {player.user_id for player in running.game.alive_players()}
         extension_view = DayExtensionVoteView(running.guild_id, alive_user_ids)
-        vote_message = await send_embed(
-            channel,
+        extension_message_text = (
             f"{duration_text(discussion_seconds)} 토론 시간이 지났습니다.\n"
             f"{DAY_EXTENSION_VOTE_SECONDS}초 안에 생존자 과반수"
             f"({extension_view.required_votes}/{len(alive_user_ids)}명)가 `1분 연장`을 누르면 "
             "낮 토론을 1분 연장합니다.\n"
-            "과반수가 모이지 않으면 바로 투표로 넘어갑니다.",
-            view=extension_view,
-            title="낮 토론 연장 투표",
+            "과반수가 모이지 않으면 바로 투표로 넘어갑니다."
         )
+        if guild:
+            vote_message = await send_game_embed(
+                guild,
+                channel,
+                running,
+                extension_message_text,
+                view=extension_view,
+                title="낮 토론 연장 투표",
+            )
+        else:
+            vote_message = await send_embed(
+                channel,
+                extension_message_text,
+                view=extension_view,
+                title="낮 토론 연장 투표",
+            )
         skipped_to_vote = await wait_for_day_vote_or_view(running, extension_view)
         extension_view.accepting = False
         disable_view_items(extension_view)
@@ -2624,50 +4800,217 @@ async def run_day_discussion(
 
 async def send_roles(guild: discord.Guild, running: RunningGame) -> None:
     channel = guild.get_channel(running.channel_id)
-    failed_names: list[str] = []
-    for player in running.game.players:
-        member = await get_guild_member(guild, player.user_id)
-        if not member:
-            continue
-        sent = await send_private(
-            member,
-            f"{role_message(running.game, player)}\n\n"
-            f"방 설정\n{public_game_settings_text(running.game, '현재 게임 설정입니다.')}\n\n"
-            "전체 역할 설명은 다음 임베드 또는 `/마피아능력` 명령어로 다시 확인할 수 있습니다.",
-        )
-        if sent:
-            try:
-                await member.send(embed=make_role_guide_embed(running.game, title="전체 역할 설명"))
-            except discord.DiscordException:
-                sent = False
-        if not sent:
-            failed_names.append(player.name)
+    semaphore = asyncio.Semaphore(8)
+
+    async def send_one(player: Player) -> str | None:
+        async with semaphore:
+            anonymous_notice = ""
+            if running.anonymous_enabled:
+                alias = running.anonymous_aliases.get(player.user_id, "익명")
+                anonymous_notice = (
+                    f"\n\n익명 이름: **{alias}**\n"
+                    "채팅은 서버에 생성된 본인 익명 입력 채널에서만 진행하세요."
+                )
+            sent = await send_player_secret(
+                guild,
+                running,
+                player,
+                f"{role_message(running.game, player)}\n\n"
+                f"방 설정\n{public_game_settings_text(running.game, '현재 게임 설정입니다.')}\n\n"
+                f"게임 설명\n{game_rule_text(running.game, running.reveal_death_roles)}\n\n"
+                "본인 역할 설명은 `/마피아능력`, 전체 역할 설명은 `/역할설명`으로 다시 확인할 수 있습니다."
+                f"{anonymous_notice}",
+            )
+            return None if sent else player.name
+
+    results = await asyncio.gather(
+        *(send_one(player) for player in running.game.players),
+        return_exceptions=True,
+    )
+    failed_names = [
+        result
+        for result in results
+        if isinstance(result, str)
+    ]
 
     if failed_names and isinstance(channel, discord.abc.Messageable):
         await send_embed(
             channel,
-            "DM을 보낼 수 없는 참가자: " + ", ".join(failed_names),
+            "비밀 메시지를 보낼 수 없는 참가자: " + ", ".join(failed_names),
             color=ERROR_EMBED_COLOR,
         )
 
 
-async def wait_for_night_actions(
+async def restore_frogs_for_new_night(guild: discord.Guild, running: RunningGame) -> None:
+    restored = False
+    for player in running.game.restore_frogs():
+        restored = True
+        await set_frog_channel_member_access(
+            guild,
+            running,
+            player,
+            can_view=False,
+            can_chat=False,
+            reason="마피아 게임 개구리 저주 종료",
+        )
+        await restore_frog_game_channel_permission(guild, running, player)
+        await refresh_player_private_channel_access(guild, running, player)
+    if restored:
+        await sync_cult_team_channel_access(guild, running)
+
+
+async def apply_frog_permissions(
+    guild: discord.Guild,
+    running: RunningGame,
+    player: Player,
+) -> None:
+    await set_frog_channel_member_access(
+        guild,
+        running,
+        player,
+        can_view=True,
+        can_chat=True,
+        reason="마피아 게임 마녀 저주로 개구리 채팅방 권한 부여",
+    )
+    await set_frog_game_channel_permission(
+        guild,
+        running,
+        player,
+        can_chat=False,
+        reason="마피아 게임 마녀 저주로 게임 채널 발언 제한",
+    )
+    await disable_private_role_channel_for_player(guild, running, player)
+
+
+async def remove_frog_permissions(
+    guild: discord.Guild,
+    running: RunningGame,
+    player: Player,
+) -> None:
+    await set_frog_channel_member_access(
+        guild,
+        running,
+        player,
+        can_view=False,
+        can_chat=False,
+        reason="마피아 게임 개구리 상태 종료",
+    )
+    await restore_frog_game_channel_permission(guild, running, player)
+
+
+async def restore_revived_player_roles(
+    guild: discord.Guild,
+    running: RunningGame,
+    player: Player,
+) -> None:
+    participant_role = get_participant_role(guild)
+    member = await get_guild_member(guild, player.user_id)
+    if member and participant_role and participant_role not in member.roles:
+        try:
+            await member.add_roles(participant_role, reason="마피아 게임 과학자 부활로 참가자 역할 복구")
+        except discord.DiscordException:
+            pass
+    await remove_dead_player_roles_from_ids(
+        guild,
+        {player.user_id},
+        "마피아 게임 과학자 부활로 사망자 역할 제거",
+    )
+    await set_dead_channel_member_access(
+        guild,
+        running,
+        player,
+        can_view=False,
+        can_chat=False,
+        reason="마피아 게임 과학자 부활로 사망자 채팅방 권한 제거",
+    )
+    await refresh_player_private_channel_access(guild, running, player)
+    await upsert_game_status(guild, running)
+
+
+async def sync_scientist_mafia_permissions(
+    guild: discord.Guild,
+    running: RunningGame,
+) -> None:
+    for player in running.game.players:
+        if player.role != Role.SCIENTIST or player.user_id not in running.game.scientist_contacted:
+            continue
+        if player.alive:
+            await refresh_player_private_channel_access(guild, running, player)
+        elif player.user_id in running.game.scientist_pending_revive_ids:
+            await set_player_private_channel_access(
+                guild,
+                running,
+                Role.MAFIA,
+                player,
+                can_chat=True,
+                reason="마피아 게임 과학자 유착으로 마피아 채널 권한 부여",
+            )
+
+
+async def apply_timed_night_events(
+    guild: discord.Guild,
     channel: discord.abc.Messageable,
     running: RunningGame,
 ) -> None:
+    cursed_players, witch_contacts = running.game.apply_witch_curses()
+    for player in cursed_players:
+        await apply_frog_permissions(guild, running, player)
+    for user_id in witch_contacts:
+        player = running.game.get_player(user_id)
+        if player:
+            await add_player_to_private_role_channel(guild, running, Role.MAFIA, player)
+            await send_player_secret(guild, running, player, "저주 대상이 마피아라 마피아팀과 접선했습니다.")
+    if cursed_players:
+        await send_game_embed(
+            guild,
+            channel,
+            running,
+            "마녀의 저주가 발동했습니다.\n"
+            "누군가 다음 밤까지 개구리가 되었습니다.",
+            title="마녀 저주",
+            color=WARNING_EMBED_COLOR,
+        )
+
+    revived_players = running.game.revive_pending_scientists()
+    for player in revived_players:
+        await restore_revived_player_roles(guild, running, player)
+    if revived_players:
+        await sync_cult_team_channel_access(guild, running)
+    if revived_players:
+        await send_game_embed(
+            guild,
+            channel,
+            running,
+            "\n".join(f"[과학자 {player.name}님이 부활했습니다.]" for player in revived_players),
+            title="과학자 부활",
+            color=SUCCESS_EMBED_COLOR,
+        )
+
+
+async def wait_for_night_actions(
+    guild: discord.Guild,
+    channel: discord.abc.Messageable,
+    running: RunningGame,
+) -> None:
+    running.night_timed_events_due = config.night_seconds <= 10
     if config.night_seconds <= 10:
         await wait_for_event_or_timeout(running.night_complete_event, config.night_seconds)
+        await apply_timed_night_events(guild, channel, running)
         return
 
     await wait_for_event_or_timeout(running.night_complete_event, config.night_seconds - 10)
     if running.night_complete_event.is_set():
         return
     if running.game.phase == Phase.NIGHT and games.get(running.guild_id) is running:
-        await send_embed(
+        await send_game_embed(
+            guild,
             channel,
+            running,
             "밤 시간이 10초 남았습니다. 아직 행동하지 않았다면 지금 선택하세요.",
             title="밤 10초 전",
         )
+        running.night_timed_events_due = True
+        await apply_timed_night_events(guild, channel, running)
     await wait_for_event_or_timeout(running.night_complete_event, 10)
 
 
@@ -2677,15 +5020,23 @@ async def run_night(
     running: RunningGame,
 ) -> None:
     running.game.phase = Phase.NIGHT
+    await upsert_game_status(guild, running)
     running.night_complete_event.clear()
-    await sync_dead_channel_shaman_permissions(guild, running, can_chat=True)
+    running.night_timed_events_due = config.night_seconds <= 10
+    await restore_frogs_for_new_night(guild, running)
+    await announce_hacker_results(guild, running)
+    await announce_vigilante_investigation_results(guild, running)
+    await sync_scientist_mafia_permissions(guild, running)
     for user_id in running.game.ensure_godfather_auto_contact():
         player = running.game.get_player(user_id)
         if player:
             await add_player_to_private_role_channel(guild, running, Role.MAFIA, player)
-            member = await get_guild_member(guild, user_id)
-            if member:
-                await send_private(member, "세 번째 밤이 되어 마피아 팀과 자동 접선했습니다. 이제 마피아 비밀방을 볼 수 있고 밤마다 확정 처치 대상을 지목합니다.")
+            await send_player_secret(
+                guild,
+                running,
+                player,
+                "세 번째 밤이 되어 마피아 팀과 자동 접선했습니다. 이제 마피아 비밀방을 볼 수 있고 밤마다 확정 처치 대상을 지목합니다.",
+            )
     police_can_act = any(actor.role == Role.POLICE for actor in running.game.night_action_actors())
     await set_game_channel_chat(
         guild,
@@ -2694,19 +5045,21 @@ async def run_night(
         participants_can_chat=False,
         reason="마피아 게임 밤 시작",
     )
-    await send_embed(
+    await sync_dead_channel_shaman_permissions(guild, running, can_chat=True)
+    await send_game_embed(
+        guild,
         channel,
+        running,
         f"밤이 되었습니다. {config.night_seconds}초 동안 게임 채널 채팅이 비활성화됩니다.\n"
-        "밤 행동이 있는 역할에게 DM이 전송됩니다.\n"
+        "밤 행동이 있는 역할은 본인 익명 채널 또는 DM에서 선택합니다.\n"
         "행동 가능한 역할이 모두 선택하면 남은 시간을 기다리지 않고 바로 아침으로 넘어갑니다.",
         title="밤",
     )
+    if running.night_timed_events_due:
+        await apply_timed_night_events(guild, channel, running)
 
     failed_names: list[str] = []
     for actor in running.game.night_action_actors():
-        member = await get_guild_member(guild, actor.user_id)
-        if not member:
-            continue
         if actor.role == Role.CONTRACTOR:
             contact_targets = [player for player in running.game.alive_players() if player.user_id != actor.user_id]
             contract_targets = sorted(
@@ -2717,15 +5070,17 @@ async def run_night(
                 running.guild_id,
                 actor,
                 sorted(contact_targets, key=lambda player: player.name.casefold()),
-                contract_targets,
-                can_contact=actor.user_id not in running.game.contractor_contacted,
-                can_contract=running.game.contractor_can_use_contract(actor.user_id),
-            )
-            sent = await send_private(
-                member,
+            contract_targets,
+            can_contact=actor.user_id not in running.game.contractor_contacted,
+            can_contract=running.game.contractor_can_use_contract(actor.user_id),
+        )
+            sent = await send_player_secret(
+                guild,
+                running,
+                actor,
                 "청부업자 밤 행동을 선택하세요.\n"
                 "동업은 마피아를 지목하면 접선합니다.\n"
-                "청부는 두 번째 밤부터 사용할 수 있고, 직업이 공개된 사람은 대상에서 제외됩니다.",
+                "청부는 두 번째 밤부터 사용할 수 있고, 수사직과 직업이 공개된 사람은 대상에서 제외됩니다.",
                 view,
             )
             if not sent:
@@ -2733,8 +5088,10 @@ async def run_night(
             continue
         targets = night_targets(running.game, actor)
         if targets:
-            sent = await send_private(
-                member,
+            sent = await send_player_secret(
+                guild,
+                running,
+                actor,
                 f"{actor.role.value} 밤 행동을 선택하세요.",
                 NightActionView(running.guild_id, actor, targets),
             )
@@ -2742,15 +5099,19 @@ async def run_night(
                 failed_names.append(actor.name)
 
     if failed_names:
-        await send_embed(
+        await send_game_embed(
+            guild,
             channel,
-            "밤 행동 DM을 보낼 수 없는 참가자: " + ", ".join(failed_names),
+            running,
+            "밤 행동 선택지를 보낼 수 없는 참가자: " + ", ".join(failed_names),
             color=ERROR_EMBED_COLOR,
         )
 
     if running.game.all_night_actions_submitted():
         running.night_complete_event.set()
-    await wait_for_night_actions(channel, running)
+    await wait_for_night_actions(guild, channel, running)
+    running.night_timed_events_due = True
+    await apply_timed_night_events(guild, channel, running)
     result = running.game.resolve_night()
     await sync_dead_channel_shaman_permissions(guild, running, can_chat=False)
     await announce_night_private_results(guild, running, result)
@@ -2762,8 +5123,23 @@ async def run_night(
         player = running.game.get_player(user_id)
         if player:
             await add_player_to_private_role_channel(guild, running, Role.MAFIA, player)
+    for user_id in result.witch_contacts:
+        player = running.game.get_player(user_id)
+        if player:
+            await add_player_to_private_role_channel(guild, running, Role.MAFIA, player)
+    for user_id in result.nurse_contacts:
+        player = running.game.get_player(user_id)
+        if player:
+            await add_player_to_private_role_channel(guild, running, Role.DOCTOR, player)
+    await sync_cult_team_channel_access(guild, running)
     await sync_dead_players_private_role_channels(guild, running)
 
+    doctor_saved = (
+        result.mafia_target is not None
+        and result.protected is not None
+        and result.mafia_target.user_id == result.protected.user_id
+        and result.mafia_target not in result.killed_players
+    )
     if result.killed_players:
         killed_lines: list[str] = []
         for killed in result.killed_players:
@@ -2777,10 +5153,25 @@ async def run_night(
                 can_chat=killed.user_id not in running.game.purified_dead_ids,
                 reason="마피아 게임 사망자 채팅방 권한 부여",
             )
+            await remove_frog_permissions(guild, running, killed)
             await disable_private_role_channel_for_player(guild, running, killed)
+            if killed.role == Role.SCIENTIST and killed.user_id in running.game.scientist_contacted:
+                await set_player_private_channel_access(
+                    guild,
+                    running,
+                    Role.MAFIA,
+                    killed,
+                    can_chat=True,
+                    reason="마피아 게임 과학자 유착으로 마피아 채널 권한 부여",
+                )
             if killed in result.contractor_kills:
                 line = (
                     f"- {killed.name} 님이 청부업자에게 정체를 들켜 암살 당했습니다. "
+                    f"{death_role_text(running, killed)}"
+                )
+            elif killed in result.vigilante_kills:
+                line = (
+                    f"- {killed.name} 님이 자경단원에게 숙청당했습니다. "
                     f"{death_role_text(running, killed)}"
                 )
             else:
@@ -2797,6 +5188,7 @@ async def run_night(
                 line += f" '{DEAD_PLAYER_ROLE}' 역할 부여에 실패했습니다."
             killed_lines.append(line)
         await sync_dead_players_private_role_channels(guild, running)
+        await sync_cult_team_channel_access(guild, running)
         message = (
             "아침이 밝았습니다. 밤 사이 사망자가 발생했습니다.\n"
             + "\n".join(killed_lines)
@@ -2807,32 +5199,74 @@ async def run_night(
                 for terrorist, target in result.terrorist_retaliations
             ]
             message += "\n\n지목 반격\n" + "\n".join(retaliation_lines)
-        await send_embed(channel, message, title="밤 결과")
-    elif result.mafia_target and result.protected:
-        await send_embed(
+        await send_game_embed(guild, channel, running, message, title="밤 결과", include_dead=True)
+    elif doctor_saved:
+        saved_player = result.protected
+        await send_game_embed(
+            guild,
             channel,
-            "아침이 밝았습니다. 의사의 보호로 아무도 사망하지 않았습니다.",
+            running,
+            f"아침이 밝았습니다. **{saved_player.name}**님이 의사의 치료로 살아났습니다.",
             title="밤 결과",
+            color=SUCCESS_EMBED_COLOR,
+            include_dead=True,
         )
     else:
-        await send_embed(
+        await send_game_embed(
+            guild,
             channel,
+            running,
             "아침이 밝았습니다. 아무도 사망하지 않았습니다.",
             title="밤 결과",
+            include_dead=True,
+        )
+    if result.killed_players and doctor_saved and result.protected:
+        await send_game_embed(
+            guild,
+            channel,
+            running,
+            f"**{result.protected.name}**님이 의사의 치료로 살아났습니다.",
+            title="의사 치료",
+            color=SUCCESS_EMBED_COLOR,
+            include_dead=True,
         )
     if result.soldier_blocks:
-        await send_embed(
+        await send_game_embed(
+            guild,
             channel,
+            running,
             "\n".join(
                 f"군인 **{soldier.name}**님이 마피아의 공격을 버텨냈습니다!"
                 for soldier in result.soldier_blocks
             ),
             title="군인 방탄",
             color=WARNING_EMBED_COLOR,
+            include_dead=True,
+        )
+    if result.reporter_results:
+        await send_game_embed(
+            guild,
+            channel,
+            running,
+            "\n".join(result.reporter_results.values()),
+            title="기자 특종",
+            color=SUCCESS_EMBED_COLOR,
+            include_dead=True,
+        )
+    if result.cult_bells:
+        await send_game_embed(
+            guild,
+            channel,
+            running,
+            "교주의 종소리가 울렸습니다.",
+            title="교주 포교",
+            color=WARNING_EMBED_COLOR,
+            include_dead=True,
         )
     await announce_police_result(guild, running, result)
-    await announce_public_police_status(channel, running, police_can_act, result)
-    await announce_morning_mafia_count(channel, running)
+    await announce_public_police_status(guild, channel, running, police_can_act, result)
+    await announce_morning_mafia_count(guild, channel, running)
+    await upsert_game_status(guild, running)
 
 
 async def announce_police_result(
@@ -2852,15 +5286,28 @@ async def announce_police_result(
         result_text = "마피아입니다" if result.police_target_is_mafia else "마피아가 아닙니다"
         message = f"조사 결과: {result.police_target.name} 님은 **{result_text}**."
 
-    channel = guild.get_channel(running.private_channel_ids.get(Role.POLICE, 0))
-    if isinstance(channel, discord.abc.Messageable):
-        await send_embed(channel, message, title="경찰 조사 결과")
-        return
-
     for player in alive_police:
-        member = await get_guild_member(guild, player.user_id)
-        if member:
-            await send_private(member, message)
+        await send_player_secret(guild, running, player, message)
+
+
+async def announce_hacker_results(
+    guild: discord.Guild,
+    running: RunningGame,
+) -> None:
+    for user_id, message in running.game.consume_hacker_results().items():
+        player = running.game.get_player(user_id)
+        if player:
+            await send_player_secret(guild, running, player, message)
+
+
+async def announce_vigilante_investigation_results(
+    guild: discord.Guild,
+    running: RunningGame,
+) -> None:
+    for user_id, message in running.game.consume_vigilante_results().items():
+        player = running.game.get_player(user_id)
+        if player:
+            await send_player_secret(guild, running, player, message)
 
 
 async def announce_night_private_results(
@@ -2871,13 +5318,18 @@ async def announce_night_private_results(
     for user_id, message in {
         **result.detective_results,
         **result.shaman_results,
+        **result.agent_results,
         **result.spy_results,
         **result.contractor_results,
         **result.godfather_results,
+        **result.vigilante_results,
+        **result.nurse_results,
+        **result.cult_results,
+        **result.fanatic_results,
     }.items():
-        member = await get_guild_member(guild, user_id)
-        if member:
-            await send_private(member, message)
+        player = running.game.get_player(user_id)
+        if player:
+            await send_player_secret(guild, running, player, message)
 
     for user_id in result.shaman_purifications:
         player = running.game.get_player(user_id)
@@ -2890,6 +5342,14 @@ async def announce_night_private_results(
                 can_chat=False,
                 reason="마피아 게임 영매 성불로 사망자 채팅 금지",
             )
+            if running.anonymous_enabled:
+                await set_anonymous_general_input_access(
+                    guild,
+                    running,
+                    player,
+                    can_chat=False,
+                    reason="마피아 게임 영매 성불로 익명 사망자 채팅 금지",
+                )
 
     for user_id, inherited_role in result.graverobber_results.items():
         player = running.game.get_player(user_id)
@@ -2904,20 +5364,30 @@ async def announce_night_private_results(
                 can_chat=running.game.phase == Phase.NIGHT,
                 reason="마피아 게임 도굴꾼 영매 계승으로 사망자 채팅방 권한 부여",
             )
-        member = await get_guild_member(guild, user_id)
-        if member:
-            await send_private(member, f"도굴꾼 능력으로 **{inherited_role.value}** 직업을 이어받았습니다.")
+        if player:
+            await send_player_secret(
+                guild,
+                running,
+                player,
+                f"도굴꾼 능력으로 **{inherited_role.value}** 직업을 이어받았습니다.",
+            )
 
     for soldier in result.soldier_blocks:
-        member = await get_guild_member(guild, soldier.user_id)
-        if member:
-            await send_private(
-                member,
-                "방탄으로 마피아 공격을 한 차례 막았습니다. 누가 공격했는지는 알 수 없습니다.",
-            )
+        await send_player_secret(
+            guild,
+            running,
+            soldier,
+            "방탄으로 마피아 공격을 한 차례 막았습니다. 누가 공격했는지는 알 수 없습니다.",
+        )
+
+    for user_id in result.fanatic_inherits:
+        player = running.game.get_player(user_id)
+        if player:
+            await send_player_secret(guild, running, player, "교주가 사망해 광신도가 교주의 능력을 물려받았습니다.")
 
 
 async def announce_public_police_status(
+    guild: discord.Guild,
     channel: discord.abc.Messageable,
     running: RunningGame,
     police_can_act: bool,
@@ -2937,33 +5407,66 @@ async def announce_public_police_status(
     else:
         message = "경찰이 마피아를 발견하지 못했습니다. 자세한 조사 결과는 경찰 비공개 채널로 전달됩니다."
         color = WARNING_EMBED_COLOR
-    await send_embed(channel, message, title="경찰 조사 결과 공개", color=color)
+    await send_game_embed(
+        guild,
+        channel,
+        running,
+        message,
+        title="경찰 조사 결과 공개",
+        color=color,
+        include_dead=True,
+    )
 
 
 async def announce_morning_mafia_count(
+    guild: discord.Guild,
     channel: discord.abc.Messageable,
     running: RunningGame,
 ) -> None:
     if not running.reveal_morning_mafia_count:
         return
 
-    await send_embed(
+    await send_game_embed(
+        guild,
         channel,
+        running,
         f"현재 생존 마피아: **{len(running.game.alive_known_mafia_team())}명**",
         title="아침 마피아 현황",
+        include_dead=True,
     )
 
 
 def night_targets(game: MafiaGame, actor: Player) -> list[Player]:
     alive = sorted(game.alive_players(), key=lambda player: player.name.casefold())
     if actor.role == Role.MAFIA:
-        return [player for player in alive if game.can_mafia_attack(player)]
+        return [player for player in alive if game.can_mafia_attack(player, actor.user_id)]
     if actor.role == Role.DOCTOR:
         return alive
+    if actor.role == Role.NURSE:
+        if actor.user_id in game.nurse_contacted and not game.alive_role_count(Role.DOCTOR):
+            return alive
+        return [player for player in alive if player.user_id != actor.user_id]
     if actor.role == Role.SHAMAN:
         return sorted(game.unpurified_dead_players(), key=lambda player: player.name.casefold())
-    if actor.role in {Role.POLICE, Role.DETECTIVE, Role.SPY, Role.GODFATHER, Role.TERRORIST}:
+    if actor.role == Role.CULT_LEADER:
+        return [
+            player
+            for player in alive
+            if player.user_id != actor.user_id and not game.is_cult_team(player)
+        ]
+    if actor.role in {
+        Role.POLICE,
+        Role.REPORTER,
+        Role.DETECTIVE,
+        Role.SPY,
+        Role.WITCH,
+        Role.GODFATHER,
+        Role.TERRORIST,
+        Role.FANATIC,
+    }:
         return [player for player in alive if player.user_id != actor.user_id]
+    if actor.role == Role.VIGILANTE:
+        return sorted(game.vigilante_execution_targets(actor), key=lambda player: player.name.casefold())
     if actor.role == Role.CONTRACTOR:
         return sorted(game.contractor_contract_targets(actor), key=lambda player: player.name.casefold())
     return []
@@ -2975,10 +5478,15 @@ async def announce_winner(channel: discord.abc.Messageable, running: RunningGame
         return False
 
     running.game.phase = Phase.ENDED
+    guild = bot.get_guild(running.guild_id)
+    if guild:
+        await upsert_game_status(guild, running)
     if winner == Winner.MAFIA:
         winner_text = "마피아 승리!"
     elif winner == Winner.JOKER:
         winner_text = "조커 승리!"
+    elif winner == Winner.CULT:
+        winner_text = "교주팀 승리!"
     else:
         winner_text = "시민 승리!"
     await announce_final_roles(channel, running, winner_text)
@@ -2990,27 +5498,79 @@ async def announce_final_roles(
     running: RunningGame,
     result_text: str,
 ) -> None:
+    message = f"{result_text}\n\n최종 역할 공개\n{final_role_reveal_text(running)}"
+    guild = bot.get_guild(running.guild_id)
+    if guild:
+        await send_game_embed(
+            guild,
+            channel,
+            running,
+            message,
+            title="게임 종료",
+            color=SUCCESS_EMBED_COLOR,
+            include_dead=True,
+        )
+        original_channel = guild.get_channel(running.channel_id)
+        current_channel_id = getattr(channel, "id", None)
+        if (
+            isinstance(original_channel, discord.abc.Messageable)
+            and getattr(original_channel, "id", None) != current_channel_id
+        ):
+            await send_embed(
+                original_channel,
+                message,
+                title="게임 종료",
+                color=SUCCESS_EMBED_COLOR,
+            )
+        return
+
     await send_embed(
         channel,
-        f"{result_text}\n\n최종 역할 공개\n{running.game.reveal_roles()}",
+        message,
         title="게임 종료",
         color=SUCCESS_EMBED_COLOR,
     )
 
 
+def final_role_reveal_text(running: RunningGame) -> str:
+    if not running.anonymous_enabled:
+        return running.game.reveal_roles()
+
+    lines: list[str] = []
+    for player in sorted(
+        running.game.players,
+        key=lambda item: running.anonymous_aliases.get(item.user_id, item.name).casefold(),
+    ):
+        alias = running.anonymous_aliases.get(player.user_id, "익명")
+        real_name = original_player_name(running, player)
+        state = "" if player.alive else " (사망)"
+        lines.append(f"- {alias} = {real_name}: {player.role.value}{state}")
+    return "\n".join(lines)
+
+
 ROLE_GUIDE_ORDER = (
     Role.MAFIA,
     Role.POLICE,
+    Role.AGENT,
+    Role.VIGILANTE,
     Role.DOCTOR,
+    Role.NURSE,
     Role.DETECTIVE,
     Role.SHAMAN,
     Role.GRAVEROBBER,
     Role.POLITICIAN,
+    Role.JUDGE,
+    Role.REPORTER,
+    Role.HACKER,
     Role.TERRORIST,
     Role.SOLDIER,
     Role.SPY,
     Role.CONTRACTOR,
+    Role.WITCH,
+    Role.SCIENTIST,
     Role.GODFATHER,
+    Role.CULT_LEADER,
+    Role.FANATIC,
     Role.JOKER,
     Role.CITIZEN,
 )
@@ -3019,15 +5579,25 @@ ROLE_TEAM_TEXT = {
     Role.MAFIA: "마피아팀",
     Role.SPY: "마피아팀 특수",
     Role.CONTRACTOR: "마피아팀 특수",
+    Role.WITCH: "마피아팀 특수",
+    Role.SCIENTIST: "마피아팀 특수",
     Role.GODFATHER: "마피아팀 특수",
+    Role.CULT_LEADER: "교주팀",
+    Role.FANATIC: "시민팀 특수",
     Role.JOKER: "중립",
     Role.CITIZEN: "시민팀",
     Role.DOCTOR: "시민팀",
+    Role.NURSE: "시민팀 특수",
     Role.POLICE: "시민팀",
+    Role.AGENT: "시민팀",
+    Role.VIGILANTE: "시민팀",
     Role.DETECTIVE: "시민팀 특수",
     Role.SHAMAN: "시민팀 특수",
     Role.GRAVEROBBER: "시민팀 특수",
     Role.POLITICIAN: "시민팀 특수",
+    Role.JUDGE: "시민팀 특수",
+    Role.REPORTER: "시민팀 특수",
+    Role.HACKER: "시민팀 특수",
     Role.TERRORIST: "시민팀 특수",
     Role.SOLDIER: "시민팀 특수",
     Role.VILLAIN: "마피아팀",
@@ -3037,15 +5607,25 @@ ROLE_GOAL_TEXT = {
     Role.MAFIA: "시민을 줄여 생존 마피아 수가 나머지 생존자 수 이상이 되게 하세요.",
     Role.SPY: "접선으로 마피아팀에 합류하고, 정보를 모아 시민팀을 무너뜨리세요.",
     Role.CONTRACTOR: "정체를 알아낸 시민을 암살하고, 마피아와 접선해 팀에 합류하세요.",
+    Role.WITCH: "저주로 플레이어를 개구리로 만들어 행동과 발언을 막고 마피아와 접선하세요.",
+    Role.SCIENTIST: "죽음을 이용해 마피아팀과 접선하고 다음 밤 부활하세요.",
     Role.GODFATHER: "세 번째 밤 이후 마피아팀에 합류해 확정 처치로 판을 끝내세요.",
+    Role.CULT_LEADER: "홀수날 밤마다 포교를 늘려 교주팀이 생존자의 절반 이상이 되게 하세요.",
+    Role.FANATIC: "포교 전에는 시민팀으로 추리하고, 포교 후에는 교주팀의 승리를 돕습니다.",
     Role.JOKER: "낮 투표와 찬반투표를 거쳐 처형되면 단독 승리합니다.",
     Role.CITIZEN: "토론과 투표로 모든 마피아를 제거하세요.",
     Role.DOCTOR: "마피아의 밤 공격을 막아 시민팀 생존자를 지키세요.",
+    Role.NURSE: "의사를 찾아 접선하고, 의사 사망 후에는 치료 능력을 이어받아 시민팀을 지키세요.",
     Role.POLICE: "조사 결과로 마피아를 찾아 시민팀의 투표 방향을 잡으세요.",
+    Role.AGENT: "매일 밤 도착하는 지령으로 시민팀 직업 정보를 확보하세요.",
+    Role.VIGILANTE: "확실하게 알아낸 마피아팀을 밤에 직접 처형하세요.",
     Role.DETECTIVE: "밤 행동의 이동 경로를 추적해 거짓말을 잡아내세요.",
     Role.SHAMAN: "사망자의 말을 듣고 성불로 숨은 직업 정보를 확보하세요.",
     Role.GRAVEROBBER: "첫날 밤 사망자의 직업을 이어받아 변수 역할을 맡습니다.",
     Role.POLITICIAN: "강한 투표권과 처형 면역으로 낮 토론을 시민팀 쪽으로 끌어오세요.",
+    Role.JUDGE: "찬반투표의 최종 결정을 장악해 시민팀 처형 흐름을 통제하세요.",
+    Role.REPORTER: "단 한 번의 특종으로 숨은 직업을 공개해 시민팀에 정보를 주세요.",
+    Role.HACKER: "낮 해킹으로 정보를 얻고, 자신에게 오는 능력을 다른 대상에게 돌리세요.",
     Role.TERRORIST: "위험한 대상을 지정해 자신이 죽을 때 함께 데려가세요.",
     Role.SOLDIER: "마피아의 첫 공격을 버텨 살아남고 시민팀에 단서를 남기세요.",
     Role.VILLAIN: "마피아팀 승리를 도우세요.",
@@ -3059,8 +5639,20 @@ ROLE_ABILITY_TEXTS = {
     Role.POLICE: (
         ("수색", "밤마다 한 명을 조사해 마피아인지 아닌지 확인합니다."),
     ),
+    Role.AGENT: (
+        ("공작", "밤이 끝날 때 살아있는 시민팀 중 아직 알아내지 않았고 공개되지 않은 한 명의 직업을 무작위로 전달받습니다."),
+    ),
+    Role.VIGILANTE: (
+        ("숙청 조사 [1회용]", "게임 중 한 번, 낮에 한 명을 선택해 밤이 시작될 때 마피아팀 여부를 확인합니다."),
+        ("숙청 처형 [1회용]", "밤에 확실하게 알고 있는 마피아팀을 한 명 선택해 처형합니다. 성공/실패와 관계없이 한 번만 시도할 수 있습니다."),
+    ),
     Role.DOCTOR: (
         ("치료", "밤마다 한 명을 선택합니다. 대상이 일반 마피아에게 공격받으면 사망을 막습니다."),
+    ),
+    Role.NURSE: (
+        ("처방", "밤마다 한 명을 선택해 의사인지 확인합니다. 의사라면 접선하고 의사 비밀방에 합류합니다."),
+        ("보조 치료", "의사와 접선한 상태에서 의사의 치료는 대부 처치 같은 부가 처치를 무시하고 성공합니다."),
+        ("승계 치료", "접선 후 의사가 모두 사망하면 간호사가 밤마다 한 명을 치료할 수 있습니다."),
     ),
     Role.DETECTIVE: (
         ("추리", "밤마다 한 명을 조사해 그 사람이 누구에게 능력을 사용했는지 확인합니다."),
@@ -3077,13 +5669,25 @@ ROLE_ABILITY_TEXTS = {
         ("처세", "투표와 찬반투표로 처형이 확정되어도 죽지 않고 정체가 공개됩니다."),
         ("논객", "정치인의 낮 투표와 찬반투표는 2표로 계산됩니다."),
     ),
+    Role.JUDGE: (
+        ("선고", "찬반투표 결과가 자신의 선택과 다르면 정체를 드러내고 판사의 선택대로 처형 여부를 결정합니다."),
+        ("권위", "정체를 드러낸 뒤부터 살아있는 동안 찬반투표 결과는 판사의 선택으로만 결정됩니다."),
+    ),
+    Role.REPORTER: (
+        ("특종 [1회용]", "밤에 한 명을 취재해 직업을 알아내고, 아침에 모든 플레이어에게 기사로 공개합니다. 한 번만 사용할 수 있습니다."),
+        ("엠바고", "첫 번째 낮에는 기사를 낼 수 없어 두 번째 밤부터 특종을 사용할 수 있습니다."),
+    ),
+    Role.HACKER: (
+        ("해킹 [1회용]", "낮에 한 명을 선택합니다. 밤이 시작될 때 대상의 직업을 DM으로 확인합니다. 한 번만 사용할 수 있습니다."),
+        ("프록시", "해킹 사용 후 자신에게 사용되는 능력은 해킹한 대상에게 우회되어 적용됩니다."),
+    ),
     Role.TERRORIST: (
         ("지목", "밤마다 한 명을 지정합니다. 매일 밤 새 대상으로 바꿀 수 있습니다."),
         ("자폭", "마피아팀에게 처형당할 때, 지목 대상이 마피아팀이면 함께 사망합니다."),
         ("산화", "투표로 처형될 때, 지목 대상이 시민팀이 아니면 함께 사망합니다."),
     ),
     Role.SOLDIER: (
-        ("방탄", "일반 마피아의 처치 대상이 되면 한 차례 사망하지 않고 버팁니다."),
+        ("방탄 [1회용]", "일반 마피아의 처치 대상이 되면 한 차례 사망하지 않고 버팁니다."),
     ),
     Role.SPY: (
         ("첩보", "밤마다 한 명을 선택해 정확한 직업을 확인합니다."),
@@ -3091,11 +5695,27 @@ ROLE_ABILITY_TEXTS = {
     ),
     Role.CONTRACTOR: (
         ("동업", "밤마다 한 명을 지목합니다. 대상이 일반 마피아라면 접선합니다."),
-        ("청부", "두 번째 밤부터 직업이 공개되지 않은 생존자 두 명과 각 직업을 추측합니다. 둘 다 맞히면 둘 다 암살합니다."),
+        ("청부", "두 번째 밤부터 수사직과 직업이 공개된 사람을 제외한 생존자 두 명과 각 직업을 추측합니다. 둘 다 맞히면 둘 다 암살합니다."),
+    ),
+    Role.WITCH: (
+        ("저주", "밤마다 한 명을 지목합니다. 밤 10초 전부터 다음 밤이 될 때까지 대상을 개구리로 만듭니다."),
+        ("접선", "저주 대상이 일반 마피아라면 마피아팀과 접선합니다. 대상 마피아도 그 밤에는 개구리가 되어 행동할 수 없습니다."),
+    ),
+    Role.SCIENTIST: (
+        ("재생 [1회용]", "어떤 방식으로든 사망하면 바로 다음 밤 10초 전에 한 번 부활합니다."),
+        ("유착", "사망하면 마피아팀과 접선해 밤에 마피아 채널에서 대화할 수 있습니다."),
     ),
     Role.GODFATHER: (
         ("배후", "세 번째 밤이 시작되면 마피아팀과 자동으로 접선합니다."),
         ("말살", "접선 후 밤마다 한 명을 선택해 의사 치료와 관계없이 확정 처치합니다."),
+    ),
+    Role.CULT_LEADER: (
+        ("포교", "홀수날 밤마다 마피아가 아닌 플레이어 한 명을 포교합니다. 성공하면 모두에게 종소리 안내가 나갑니다."),
+        ("숭배", "포교한 대상의 직업을 알 수 있고, 교주팀 채팅방에서 밤마다 일방적으로 말을 전달합니다."),
+    ),
+    Role.FANATIC: (
+        ("추종", "밤마다 한 명을 골라 교주팀인지 확인합니다. 대상이 교주라면 자신이 포교됩니다."),
+        ("재림", "포교된 상태에서 교주가 사망하면 광신도가 교주 능력을 물려받습니다."),
     ),
     Role.JOKER: (
         ("광대극", "밤 행동은 없습니다. 낮 처형을 유도하는 것이 핵심입니다."),
@@ -3111,16 +5731,32 @@ ROLE_ABILITY_TEXTS = {
 ROLE_RULE_TEXTS = {
     Role.MAFIA: (
         "의사가 같은 대상을 치료하면 일반 마피아의 공격은 실패합니다.",
-        "접선 전 스파이, 청부업자, 대부는 일반 마피아도 모르는 상태라 공격 대상에 포함됩니다.",
+        "마피아는 본인을 포함한 모든 생존자를 공격 대상으로 고를 수 있습니다.",
         "일반 마피아가 모두 죽고 접선 전 특수 마피아만 남으면 시민팀이 승리합니다.",
     ),
     Role.POLICE: (
         "경찰이 여러 명이면 같은 대상이 살아있는 경찰 과반을 넘어야 조사됩니다.",
         "접선 전 스파이, 청부업자, 대부는 마피아가 아니라고 표시됩니다. 접선 후부터 마피아로 표시됩니다.",
     ),
+    Role.AGENT: (
+        "경찰과 요원은 한 게임에 함께 등장하지 않습니다.",
+        "공개적으로 직업이 드러난 사람과 이미 공작으로 알아낸 사람은 지령 대상에서 제외됩니다.",
+        "더 이상 알아낼 대상이 없으면 지령이 도착하지 않았다는 DM을 받습니다.",
+    ),
+    Role.VIGILANTE: (
+        "경찰, 요원, 자경단원은 한 게임에 함께 등장하지 않습니다.",
+        "낮 조사는 1회용입니다. 조사 결과가 마피아팀이면 그 대상은 숙청 가능한 대상으로 기억됩니다.",
+        "기자 특종 등으로 게임 채널에 마피아팀 직업이 공개된 대상도 숙청할 수 있습니다.",
+        "숙청 처형을 한 번이라도 시도하면 이후 낮 조사도 다시 사용할 수 없습니다.",
+    ),
     Role.DOCTOR: (
         "의사가 여러 명이면 같은 대상이 살아있는 의사 과반을 넘어야 치료됩니다.",
         "대부의 말살은 치료로 막을 수 없습니다.",
+    ),
+    Role.NURSE: (
+        "간호사는 의사와 접선하기 전에는 의사 여부만 확인합니다.",
+        "의사와 접선하면 의사의 치료가 대부 말살 같은 부가 처치를 무시하고 성공합니다.",
+        "접선한 뒤 살아있는 의사가 없으면 간호사가 치료 역할을 대신합니다.",
     ),
     Role.DETECTIVE: (
         "시민, 조커처럼 밤 행동이 없는 대상은 사용 안함으로 표시됩니다.",
@@ -3138,6 +5774,19 @@ ROLE_RULE_TEXTS = {
     Role.POLITICIAN: (
         "최후변론과 찬반투표는 다른 플레이어와 똑같이 진행됩니다.",
         "처형이 확정되는 순간 죽지 않고 정치인임이 공개된 뒤 밤으로 넘어갑니다.",
+    ),
+    Role.JUDGE: (
+        "선고가 발동하면 공개 메시지로 판사가 투표 결과를 정했다고 안내됩니다.",
+        "정체를 드러낸 판사가 살아있으면 마피아팀이 인원 승리 조건을 달성해도 게임이 즉시 끝나지 않습니다.",
+    ),
+    Role.REPORTER: (
+        "특종은 1회용이며, 사용 안함을 선택하면 능력을 소모하지 않습니다.",
+        "특종 대상의 직업은 게임 채널에 공개되며 이후 공개된 직업으로 취급됩니다.",
+    ),
+    Role.HACKER: (
+        "해킹 선택은 낮 토론 중 DM으로 진행됩니다.",
+        "프록시는 밤 능력에 적용됩니다. 투표와 찬반투표는 능력이 아니므로 우회되지 않습니다.",
+        "해킹 대상이 사망하면 프록시는 더 이상 우회되지 않습니다.",
     ),
     Role.TERRORIST: (
         "지목 대상은 밤마다 다시 선택해야 하며, 마지막으로 선택한 대상이 적용됩니다.",
@@ -3158,12 +5807,35 @@ ROLE_RULE_TEXTS = {
         "접선 전에는 마피아 비밀방을 볼 수 없고, 일반 마피아도 청부업자를 모릅니다.",
         "접선 전에는 경찰 조사에서 마피아가 아니라고 나오며 생존 마피아 수에도 포함되지 않습니다.",
         "청부 대상 둘 중 한 명이라도 직업이 틀리거나 시민팀이 아니면 암살은 실패합니다.",
-        "군인 방탄, 정치인 처세처럼 직업이 공개된 사람은 청부 대상으로 고를 수 없습니다.",
+        "경찰, 요원, 자경단원은 청부 대상으로 고를 수 없습니다.",
+        "군인 방탄, 정치인 처세처럼 게임 채널에 직업이 공개된 사람은 청부 대상으로 고를 수 없습니다.",
+    ),
+    Role.WITCH: (
+        "접선 전에는 마피아 비밀방을 볼 수 없고, 일반 마피아도 마녀를 모릅니다.",
+        "접선 전에는 경찰 조사에서 마피아가 아니라고 나오며 생존 마피아 수에도 포함되지 않습니다.",
+        "개구리가 된 대상은 밤 행동을 할 수 없고 게임 채널에서 말할 수 없습니다.",
+        "개구리 상태에서 직업을 직접 확인하는 능력은 원래 직업 대신 개구리로 표시됩니다.",
+    ),
+    Role.SCIENTIST: (
+        "접선 전에는 마피아 비밀방을 볼 수 없고, 일반 마피아도 과학자를 모릅니다.",
+        "사망하면 마피아팀과 접선하고 부활 전까지 시민 승리 판정을 막습니다.",
+        "부활하면 과학자임이 공개되고 다시 생존자로 돌아옵니다.",
     ),
     Role.GODFATHER: (
         "세 번째 밤 전에는 마피아 비밀방을 볼 수 없고 밤 행동도 없습니다.",
         "접선 전에는 경찰 조사에서 마피아가 아니라고 나오며 생존 마피아 수에도 포함되지 않습니다.",
         "접선 후에는 마피아 비밀방에 들어가고 말살을 사용할 수 있습니다.",
+    ),
+    Role.CULT_LEADER: (
+        "포교는 홀수날 밤에만 가능합니다.",
+        "마피아팀을 포교하면 실패하고 공개 안내는 나가지 않습니다.",
+        "교주팀 채팅방은 교주만 말할 수 있고 포교 대상은 볼 수만 있습니다.",
+        "교주팀 생존자가 비교주팀 생존자 이상이 되면 교주팀이 승리합니다.",
+    ),
+    Role.FANATIC: (
+        "처음에는 시민팀 특수로 취급됩니다.",
+        "추종 대상이 교주라면 광신도 본인이 포교됩니다.",
+        "포교된 상태에서 교주가 죽으면 살아있는 광신도 한 명이 교주가 됩니다.",
     ),
     Role.JOKER: (
         "밤에 사망하거나 다른 방식으로 사망하면 승리하지 못합니다.",
@@ -3226,11 +5898,51 @@ def personal_role_status(game: MafiaGame, player: Player) -> list[str]:
             "청부는 두 번째 밤부터 사용할 수 있습니다.",
             "미접선 중에는 마피아 비밀방, 경찰 마피아 판정, 생존 마피아 수에 포함되지 않습니다.",
         ]
+    if player.role == Role.WITCH:
+        contacted = player.user_id in game.witch_contacted
+        return [
+            "접선 상태: 완료" if contacted else "접선 상태: 미접선",
+            "저주는 밤 10초 전부터 적용됩니다. 10초 미만에 선택하면 바로 적용됩니다.",
+        ]
+    if player.role == Role.SCIENTIST:
+        contacted = player.user_id in game.scientist_contacted
+        revived = player.user_id in game.scientist_revive_used_ids
+        return [
+            "접선 상태: 완료" if contacted else "접선 상태: 사망 전까지 미접선",
+            "재생 사용: 사용함" if revived else "재생 사용: 미사용",
+        ]
     if player.role == Role.GODFATHER:
         contacted = player.user_id in game.godfather_contacted
         return [
             "접선 상태: 완료" if contacted else "접선 상태: 세 번째 밤 전까지 미접선",
             "접선 후부터 마피아 비밀방에 입장하고 말살을 사용할 수 있습니다.",
+        ]
+    if player.role == Role.NURSE:
+        contacted = player.user_id in game.nurse_contacted
+        doctor_alive = game.alive_role_count(Role.DOCTOR) > 0
+        return [
+            "의사 접선: 완료" if contacted else "의사 접선: 미접선",
+            "치료 승계: 가능" if contacted and not doctor_alive else "치료 승계: 불가",
+        ]
+    if player.role == Role.CULT_LEADER:
+        culted = [
+            target.name
+            for target in sorted(game.players, key=lambda item: item.name.casefold())
+            if target.user_id in game.culted_ids and target.user_id != player.user_id
+        ]
+        return [f"포교 대상: {', '.join(culted) if culted else '없음'}"]
+    if player.role == Role.FANATIC:
+        return ["포교 상태: 완료" if player.user_id in game.culted_ids else "포교 상태: 미포교"]
+    if player.role == Role.VIGILANTE:
+        known = [
+            target.name
+            for target in sorted(game.players, key=lambda item: item.name.casefold())
+            if target.user_id in game.vigilante_known_enemy_ids.get(player.user_id, set())
+        ]
+        return [
+            f"조사 사용: {'사용함' if player.user_id in game.vigilante_investigation_used_ids else '미사용'}",
+            f"처형 사용: {'사용함' if player.user_id in game.vigilante_execution_used_ids else '미사용'}",
+            f"숙청 가능 확정 대상: {', '.join(known) if known else '없음'}",
         ]
     return []
 
@@ -3266,21 +5978,18 @@ def game_rule_text(game: MafiaGame, reveal_death_roles: bool) -> str:
     return (
         f"{role_count_text(game)}\n\n"
         "게임은 밤과 낮을 반복합니다.\n"
-        "- 능력 설명: 역할 배정 후 `/마피아능력` 명령어로 언제든 다시 확인할 수 있습니다.\n"
+        "- 역할 설명: 전체 역할 설명은 `/역할설명`, 본인 역할 설명은 `/마피아능력`으로 확인할 수 있습니다.\n"
         "- 밤: 게임 채널 채팅과 반응이 비활성화되고, 밤 행동이 있는 역할은 DM으로 행동합니다.\n"
         "- 낮: 생존자는 자유롭게 토론합니다. 생존자 과반이 `바로 투표`를 누르면 토론을 끝내고 지목 투표로 넘어갑니다. 시간이 끝나면 생존자 과반으로 1분 연장을 정할 수 있습니다.\n"
         f"- 마피아 수 공개: 아침 생존 마피아 수는 {'공개됩니다' if config.reveal_morning_mafia_count else '공개되지 않습니다'}.\n"
         "- 투표: 생존자는 최후변론에 세울 사람 또는 스킵을 선택합니다. 지목자는 20초 동안 혼자 최후변론을 하고, 이후 찬반투표 과반 결과를 따릅니다.\n"
         f"- 경찰 공개: 조사 성공 여부는 {'공개됩니다' if config.reveal_public_police_status else '공개되지 않습니다'}. 실제 조사 결과는 경찰에게만 전달됩니다.\n"
-        "- 정치인: 투표권은 2표이며, 찬반투표에서 처형이 확정되어도 죽지 않고 직업이 공개된 뒤 밤으로 넘어갑니다.\n"
-        "- 테러리스트: 밤에 지목한 대상에 따라 밤 사망 또는 투표 처형 시 함께 사망시킬 수 있습니다.\n"
-        "- 영매: 사망자 채팅방을 볼 수 있고 밤에는 대화할 수 있으며, 밤마다 사망자 한 명을 성불할 수 있습니다.\n"
-        "- 군인: 일반 마피아 공격을 처음 한 번 막고, 본인에게만 방탄 발동 DM이 전달됩니다.\n"
         f"- 채팅: 낮 토론 슬로우모드는 {config.chat_slowmode_seconds}초이며 최후변론 중에는 해제됩니다.\n"
         f"- 사망자: {death_rule} 게임 채널 채팅/반응 권한은 제거되고 '{DEAD_PLAYER_ROLE}' 역할이 부여됩니다.\n\n"
         "승리 조건\n"
         "- 시민 진영: 모든 마피아를 제거하면 승리합니다.\n"
         "- 마피아 진영: 생존 마피아 수가 나머지 생존자 수 이상이면 승리합니다.\n"
+        "- 교주팀: 교주팀 생존자가 비교주팀 생존자 이상이면 승리합니다.\n"
         "- 조커: 낮 투표로 처형되면 즉시 단독 승리합니다."
     )
 
@@ -3295,11 +6004,15 @@ ROLE_GUIDE_COMMON_TEXT = (
     "**게임 흐름** 밤 행동 후 낮 토론, 투표, 최후변론, 찬반투표 순서로 진행됩니다.\n"
     "**과반 행동** 같은 역할이 여러 명이면 같은 대상이 생존 인원의 과반을 넘어야 능력이 발동합니다.\n"
     "**사망자 채팅** 사망자는 전용 채널에서 대화할 수 있고, 성불되면 채팅할 수 없습니다.\n"
-    "**숨은 마피아 특수** 스파이, 청부업자, 대부는 접선 전까지 마피아 비밀방, 경찰 마피아 판정, 생존 마피아 수에 포함되지 않습니다."
+    "**숨은 마피아 특수** 스파이, 청부업자, 마녀, 과학자, 대부는 접선 전까지 마피아 비밀방, 경찰 마피아 판정, 생존 마피아 수에 포함되지 않습니다.\n"
+    "**교주팀** 설정이 켜져 있으면 교주와 광신도가 함께 배정됩니다. 포교 대상은 교주팀 채팅방을 볼 수만 있습니다."
 )
 
+ROLE_GUIDE_ENTRIES: tuple[tuple[Role, str, str], ...] = tuple(
+    (role, role.value, role_guide_value(role)) for role in ROLE_GUIDE_ORDER
+)
 ROLE_GUIDE_SECTIONS: tuple[tuple[str, str], ...] = tuple(
-    (role.value, role_guide_value(role)) for role in ROLE_GUIDE_ORDER
+    (role_name, guide) for _role, role_name, guide in ROLE_GUIDE_ENTRIES
 )
 
 
@@ -3313,16 +6026,91 @@ def make_role_guide_embed(
         personal_text = role_message(game, player) if game else f"당신의 역할은 **{player.role.value}** 입니다."
         description = (
             f"{personal_text}\n\n"
-            "아래에서 각 역할의 능력을 확인할 수 있습니다."
+            "전체 역할 설명은 `/역할설명`으로 확인할 수 있습니다."
         )
+        return make_embed(description, title=title)
     else:
-        description = "역할별 능력과 이 봇의 실제 판정 안내입니다. 게임 중에는 `/마피아능력`으로 다시 확인할 수 있습니다."
+        description = "역할별 능력과 이 봇의 실제 판정 안내입니다. 게임 중 본인 역할은 `/마피아능력`으로 다시 확인할 수 있습니다."
 
     embed = make_embed(description, title=title)
     embed.add_field(name="공통 판정", value=ROLE_GUIDE_COMMON_TEXT, inline=False)
     for role_name, guide in ROLE_GUIDE_SECTIONS:
         embed.add_field(name=role_name, value=guide, inline=False)
     return embed
+
+
+def make_role_guide_embeds(
+    game: MafiaGame | None = None,
+    *,
+    player: Player | None = None,
+    title: str = "역할 안내",
+) -> list[discord.Embed]:
+    if player:
+        return [make_role_guide_embed(game, player=player, title=title)]
+
+    embeds: list[discord.Embed] = []
+    groups: tuple[tuple[str, tuple[tuple[str, str], ...]], ...] = (
+        (
+            "시민 역할",
+            tuple(
+                (role_name, guide)
+                for role, role_name, guide in ROLE_GUIDE_ENTRIES
+                if role_team_text(role).startswith("시민팀")
+            ),
+        ),
+        (
+            "마피아 역할",
+            tuple(
+                (role_name, guide)
+                for role, role_name, guide in ROLE_GUIDE_ENTRIES
+                if role_team_text(role).startswith("마피아팀")
+            ),
+        ),
+        (
+            "중립 역할",
+            tuple(
+                (role_name, guide)
+                for role, role_name, guide in ROLE_GUIDE_ENTRIES
+                if role_team_text(role) == "중립"
+            ),
+        ),
+        (
+            "교주팀 역할",
+            tuple(
+                (role_name, guide)
+                for role, role_name, guide in ROLE_GUIDE_ENTRIES
+                if role_team_text(role).startswith("교주팀")
+            ),
+        ),
+    )
+
+    for group_name, sections in groups:
+        group_chunks: list[list[tuple[str, str]]] = []
+        current: list[tuple[str, str]] = []
+        current_size = len(title) + len(group_name) + 200
+        for role_name, guide in sections:
+            entry_size = len(role_name) + len(guide) + 8
+            if current and (current_size + entry_size > 5200 or len(current) >= 6):
+                group_chunks.append(current)
+                current = []
+                current_size = len(title) + len(group_name) + 200
+            current.append((role_name, guide))
+            current_size += entry_size
+        if current:
+            group_chunks.append(current)
+
+        for index, chunk in enumerate(group_chunks, start=1):
+            suffix = f" {index}/{len(group_chunks)}" if len(group_chunks) > 1 else ""
+            embed = make_embed(
+                f"{group_name} 설명입니다.",
+                title=f"{title} - {group_name}{suffix}",
+            )
+            if not embeds:
+                embed.add_field(name="공통 판정", value=ROLE_GUIDE_COMMON_TEXT, inline=False)
+            for role_name, guide in chunk:
+                embed.add_field(name=role_name, value=guide, inline=False)
+            embeds.append(embed)
+    return embeds
 
 
 def role_guide_text(game: MafiaGame | None = None) -> str:
