@@ -36,4 +36,3 @@ DISCORD_TOKEN=your_bot_token_here
 ## 참고
 
 봇 초대 시 `Server Members Intent`와 메시지 관련 권한이 필요합니다.
-`.env` 파일은 토큰이 들어가므로 GitHub에 올리지 않습니다.
