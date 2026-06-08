@@ -14,13 +14,21 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 from dotenv import load_dotenv
+import uvicorn
 
 from game import MafiaGame, NightResult, Phase, Player, Role, VoteResult, Winner
+import web_settings
 
 
 BASE_DIR = Path(__file__).resolve().parent
 CONFIG_FILE = BASE_DIR / "config.json"
 STATS_FILE = BASE_DIR / "stats.json"
+
+# /마피아웹설정 명령어가 발급하는 1회용 설정 편집 링크 관련 상수.
+WEB_SETTINGS_PATH = "/web-settings"
+WEB_SETTINGS_SESSION_TTL_SECONDS = 600
+WEB_SETTINGS_DEFAULT_HOST = "0.0.0.0"
+WEB_SETTINGS_DEFAULT_PORT = 8800
 
 
 @dataclass
@@ -343,6 +351,67 @@ def persist_config_safely() -> None:
         save_config()
     except OSError as error:
         print(f"Config save error: {error!r}")
+
+
+# --- /마피아웹설정: 브라우저에서 설정을 편집할 수 있는 1회용 링크 -------------------
+
+web_settings_sessions = web_settings.WebSettingsSessionStore(ttl_seconds=WEB_SETTINGS_SESSION_TTL_SECONDS)
+
+
+def web_config_values() -> dict[str, object]:
+    return {spec.name: getattr(config, spec.name) for spec in web_settings.EDITABLE_FIELDS}
+
+
+def apply_web_config_updates(updates: dict[str, object]) -> str | None:
+    """웹 폼에서 제출된 설정 값을 적용합니다.
+
+    `/마피아설정` 명령어와 동일하게, 적용 후 특수 역할 조합이 모집 인원과
+    맞는지 검증하고 실패하면 이전 값으로 되돌립니다. 성공하면 ``config.json``
+    까지 저장하고 ``None`` 을, 실패하면 사용자에게 보여줄 오류 메시지를
+    돌려줍니다.
+    """
+
+    if int(updates.get("default_mafia_count", config.default_mafia_count)) < 1:
+        return "마피아는 최소 1명이어야 합니다."
+
+    previous = {key: getattr(config, key) for key in updates}
+    for key, value in updates.items():
+        setattr(config, key, value)
+
+    try:
+        role_counts = selected_role_counts(choose_special_roles())
+        validate_max_player_count(role_counts, config.max_player_count)
+    except ValueError as error:
+        for key, value in previous.items():
+            setattr(config, key, value)
+        return str(error)
+
+    save_config()
+    return None
+
+
+web_settings_app = web_settings.create_app(
+    sessions=web_settings_sessions,
+    get_config_values=web_config_values,
+    apply_config_updates=apply_web_config_updates,
+    base_path=WEB_SETTINGS_PATH,
+)
+
+
+def web_settings_base_url() -> str:
+    """사용자에게 보여줄 설정 페이지의 기본 URL을 계산합니다.
+
+    `WEB_SETTINGS_BASE_URL` 환경 변수가 있으면 그대로 사용하고(리버스 프록시나
+    도메인을 쓰는 경우), 없으면 호스트/포트로부터 추정합니다.
+    """
+
+    base_url = os.getenv("WEB_SETTINGS_BASE_URL")
+    if base_url:
+        return base_url.rstrip("/")
+    host = os.getenv("WEB_SETTINGS_HOST", WEB_SETTINGS_DEFAULT_HOST)
+    port = os.getenv("WEB_SETTINGS_PORT", str(WEB_SETTINGS_DEFAULT_PORT))
+    display_host = "localhost" if host in ("0.0.0.0", "::") else host
+    return f"http://{display_host}:{port}"
 
 
 def remember_member_presence(guild_id: int, member: discord.Member) -> None:
@@ -2948,6 +3017,34 @@ async def configure_game(
 
     save_config()
     await send_interaction_reply(interaction, current_settings_text(), private=False)
+
+
+@bot.tree.command(
+    name="마피아웹설정",
+    description="브라우저에서 게임 설정을 편집할 수 있는 1회용 링크를 발급합니다. (관리자 전용)",
+)
+async def web_configure_game(interaction: discord.Interaction) -> None:
+    member = require_manager(interaction)
+
+    token = web_settings_sessions.issue(
+        guild_id=interaction.guild_id or 0,
+        user_id=member.id,
+        user_label=display_name(member),
+    )
+    url = f"{web_settings_base_url()}{WEB_SETTINGS_PATH}/{token}"
+    minutes = max(1, WEB_SETTINGS_SESSION_TTL_SECONDS // 60)
+
+    await interaction.response.send_message(
+        embed=make_embed(
+            "아래 링크에서 마피아 게임 설정을 편집할 수 있습니다.\n"
+            f"{url}\n\n"
+            f"⚠️ 이 링크는 **{display_name(member)}** 님만 사용할 수 있고, "
+            f"**{minutes}분 동안 1회**만 유효합니다. 다른 사람과 공유하지 마세요.",
+            title="웹 설정 링크 발급",
+            color=SUCCESS_EMBED_COLOR,
+        ),
+        ephemeral=True,
+    )
 
 
 @bot.tree.command(name="마피아인원설정", description="마피아 게임 모집 최대 인원을 설정합니다.")
@@ -8688,12 +8785,28 @@ def anonymous_vote_summary(game: MafiaGame, result: VoteResult) -> str:
     return "\n".join(f"- {name}: {count}표" for name, count in rows)
 
 
+async def run_bot_and_web_server(token: str) -> None:
+    """디스코드 봇과 설정용 웹 서버(uvicorn)를 같은 이벤트 루프에서 함께 실행합니다."""
+
+    host = os.getenv("WEB_SETTINGS_HOST", WEB_SETTINGS_DEFAULT_HOST)
+    port = int(os.getenv("WEB_SETTINGS_PORT", str(WEB_SETTINGS_DEFAULT_PORT)))
+    web_server = uvicorn.Server(
+        uvicorn.Config(web_settings_app, host=host, port=port, log_level="warning")
+    )
+
+    async with bot:
+        await asyncio.gather(
+            bot.start(token),
+            web_server.serve(),
+        )
+
+
 def main() -> None:
     load_dotenv(BASE_DIR / ".env")
     token = os.getenv("DISCORD_TOKEN")
     if not token:
         raise RuntimeError(".env 파일에 DISCORD_TOKEN을 설정하세요.")
-    bot.run(token)
+    asyncio.run(run_bot_and_web_server(token))
 
 
 if __name__ == "__main__":

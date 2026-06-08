@@ -36,7 +36,7 @@
   "enable_shaman": true,
   "enable_soldier": true,
   "enable_nurse": true,
-  "enable_cult_team": true,
+  "enable_cult_team": false,
   "use_agent": true,
   "use_vigilante": false,
   "anonymous_mode": false,
