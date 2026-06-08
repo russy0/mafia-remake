@@ -67,6 +67,7 @@ MAFIA_TEAM_ROLES = {
 }
 INVESTIGATION_ROLES = {Role.POLICE, Role.AGENT, Role.VIGILANTE}
 CONTRACTOR_GUESSABLE_ROLES = {
+    Role.MAFIA,
     Role.DOCTOR,
     Role.REPORTER,
     Role.HACKER,
@@ -232,7 +233,6 @@ class MafiaGame:
         self.spy_targets: dict[int, list[int]] = {}
         self.spy_bonus_pending: set[int] = set()
         self.spy_contacts_this_night: list[int] = []
-        self.contractor_contact_targets: dict[int, int] = {}
         self.contractor_contracts: dict[int, tuple[tuple[int, Role], tuple[int, Role]]] = {}
         self.contractor_contacts_this_night: list[int] = []
         self.witch_targets: dict[int, int] = {}
@@ -249,6 +249,7 @@ class MafiaGame:
         self.agent_discovered_ids: set[int] = set()
         self.day_votes: dict[int, int | None] = {}
         self.confirm_votes: dict[int, bool] = {}
+        self.police_result_announced = False
         self.spy_contacted: set[int] = set()
         self.contractor_contacted: set[int] = set()
         self.scientist_contacted: set[int] = set()
@@ -486,11 +487,7 @@ class MafiaGame:
                 return False
             if actor.role == Role.SPY and actor.user_id in self.spy_bonus_pending:
                 return False
-            if (
-                actor.role == Role.CONTRACTOR
-                and actor.user_id not in self.contractor_contact_targets
-                and actor.user_id not in self.contractor_contracts
-            ):
+            if actor.role == Role.CONTRACTOR and actor.user_id not in self.contractor_contracts:
                 return False
             if actor.role == Role.WITCH and actor.user_id not in self.witch_targets:
                 return False
@@ -621,6 +618,49 @@ class MafiaGame:
             results[actor_id] = f"[숙청] {target.name} 님은 **{result_text}**."
         self.vigilante_pending_results.clear()
         return results
+
+    def _police_action_actors(self) -> list[Player]:
+        return [player for player in self.night_action_actors() if player.role == Role.POLICE]
+
+    def police_result_ready(self) -> bool:
+        actors = self._police_action_actors()
+        if not actors:
+            return False
+        actor_ids = {player.user_id for player in actors}
+        live_targets = {
+            actor_id: target_id
+            for actor_id, target_id in self.police_targets.items()
+            if actor_id in actor_ids and self._is_alive(actor_id) and self._is_alive(target_id)
+        }
+        if not live_targets:
+            return False
+        if len(live_targets) == len(actors):
+            return True
+        counts = Counter(live_targets.values())
+        return any(count > len(actors) / 2 for count in counts.values())
+
+    def current_police_result(self) -> tuple[Player | None, bool | None]:
+        target_id = self._majority_target(self.police_targets)
+        target = self.get_player(target_id) if target_id else None
+        if target is None:
+            return None, None
+        return target, self.is_known_mafia_team(target)
+
+    def police_result_message(self) -> str:
+        target, is_mafia = self.current_police_result()
+        if target is None:
+            return "경찰 조사 대상이 과반을 넘지 못해 이번 밤 조사 결과가 없습니다."
+        result_text = "마피아입니다" if is_mafia else "마피아가 아닙니다"
+        return f"조사 결과: {target.name} 님은 **{result_text}**."
+
+    def consume_ready_police_result(self) -> str | None:
+        if self.police_result_announced or not self.police_result_ready():
+            return None
+        self.police_result_announced = True
+        return self.police_result_message()
+
+    def mark_police_result_announced(self) -> None:
+        self.police_result_announced = True
 
     def vigilante_execution_targets(self, actor: Player) -> list[Player]:
         if actor.role != Role.VIGILANTE or not actor.alive:
@@ -908,31 +948,6 @@ class MafiaGame:
 
         raise ValueError(f"{actor.role.value}은/는 밤 행동이 없습니다.")
 
-    def submit_contractor_contact(self, actor_id: int, target_id: int) -> str:
-        if self.phase != Phase.NIGHT:
-            raise ValueError("지금은 밤이 아닙니다.")
-        actor = self._require_alive(actor_id)
-        if actor.role != Role.CONTRACTOR:
-            raise ValueError("청부업자만 동업을 사용할 수 있습니다.")
-        if self.is_frog(actor):
-            raise ValueError("개구리 상태에서는 밤 행동을 사용할 수 없습니다.")
-        if actor_id in self.contractor_contact_targets or actor_id in self.contractor_contracts:
-            raise ValueError("이미 이번 밤 행동을 선택했습니다.")
-        if actor_id in self.contractor_contacted:
-            raise ValueError("이미 마피아와 접선했습니다.")
-
-        selected_target = self._require_alive(target_id)
-        if actor_id == target_id:
-            raise ValueError("청부업자는 자기 자신을 지목할 수 없습니다.")
-
-        target = self._proxy_target(selected_target)
-        self.contractor_contact_targets[actor_id] = target.user_id
-        if target.role == Role.MAFIA:
-            self.contractor_contacted.add(actor_id)
-            self.contractor_contacts_this_night.append(actor_id)
-            return "[동업] 마피아와 접선했습니다."
-        return "[동업] 접선에 실패했습니다."
-
     def submit_contractor_contract(
         self,
         actor_id: int,
@@ -950,7 +965,7 @@ class MafiaGame:
             raise ValueError("개구리 상태에서는 밤 행동을 사용할 수 없습니다.")
         if self.day_number < 2:
             raise ValueError("청부는 두 번째 밤부터 사용할 수 있습니다.")
-        if actor_id in self.contractor_contact_targets or actor_id in self.contractor_contracts:
+        if actor_id in self.contractor_contracts:
             raise ValueError("이미 이번 밤 행동을 선택했습니다.")
         if first_target_id == second_target_id:
             raise ValueError("청부 대상 두 명은 서로 달라야 합니다.")
@@ -1067,7 +1082,7 @@ class MafiaGame:
         if player.role == Role.MADAM and not any(
             other.alive and other.role == Role.MADAM for other in self.players
         ):
-            release_day = self.day_number + 1
+            release_day = self._madam_seduction_release_day_after_death()
             for user_id in self.madam_seduced_ids:
                 self.madam_seduction_release_days[user_id] = max(
                     self.madam_seduction_release_days.get(user_id, release_day),
@@ -1106,7 +1121,6 @@ class MafiaGame:
             self.contractor_contacts_this_night = [
                 user_id for user_id in self.contractor_contacts_this_night if user_id != actor_id
             ]
-        self.contractor_contact_targets.pop(actor_id, None)
         self.contractor_contracts.pop(actor_id, None)
         if actor_id in self.witch_contacts_this_night:
             self.witch_contacted.discard(actor_id)
@@ -1129,9 +1143,8 @@ class MafiaGame:
             for actor_id, target_id in self.godfather_targets.items()
             if actor_id in self.godfather_contacted
         }
-        mafia_attackers = {**self.mafia_targets, **godfather_attackers}
         mafia_target_id = self._majority_target(
-            mafia_attackers,
+            self.mafia_targets,
         )
         healing_targets = dict(self.doctor_targets)
         if not self.alive_role_count(Role.DOCTOR):
@@ -1140,11 +1153,7 @@ class MafiaGame:
         police_target_id = self._majority_target(
             self.police_targets,
         )
-        godfather_target_id = (
-            mafia_target_id
-            if mafia_target_id and mafia_target_id in godfather_attackers.values()
-            else None
-        )
+        godfather_target_id = self._majority_target(godfather_attackers)
 
         mafia_target = self.get_player(mafia_target_id) if mafia_target_id else None
         protected = self.get_player(protected_id) if protected_id else None
@@ -1161,7 +1170,6 @@ class MafiaGame:
         contractor_results, contractor_contacts, contractor_kills = self._resolve_contractor_results()
         godfather_results = self._resolve_godfather_results()
         shaman_results, shaman_purifications = self._resolve_shaman_results()
-        reporter_results = self._resolve_reporter_results()
         vigilante_results, vigilante_kills = self._resolve_vigilante_results()
         nurse_results, nurse_contacts = self._resolve_nurse_results()
         cult_results, cult_bells = self._resolve_cult_results()
@@ -1173,30 +1181,51 @@ class MafiaGame:
         soldier_blocks: list[Player] = []
         lover_sacrifices: list[tuple[Player, Player]] = []
         enhanced_protection = protected_id is not None and self._nurse_enhanced_heal_active()
-        if mafia_target and mafia_target.alive:
-            lover_savior = self._lover_sacrifice_for(mafia_target)
+
+        def add_mafia_team_kill(target: Player) -> None:
+            if target not in killed_players:
+                killed_players.append(target)
+            killed_by_mafia_team_ids.add(target.user_id)
+
+        def resolve_mafia_team_attack(
+            target: Player | None,
+            *,
+            ignore_doctor: bool,
+            allow_soldier_block: bool,
+        ) -> None:
+            if not target or not target.alive:
+                return
+            lover_savior = self._lover_sacrifice_for(target)
             if lover_savior:
                 self._mark_dead(lover_savior)
-                killed_players.append(lover_savior)
-                killed_by_mafia_team_ids.add(lover_savior.user_id)
-                lover_sacrifices.append((lover_savior, mafia_target))
-            elif mafia_target.user_id == protected_id and enhanced_protection:
-                pass
-            elif godfather_target_id:
-                self._mark_dead(mafia_target)
-                killed_players.append(mafia_target)
-                killed_by_mafia_team_ids.add(mafia_target.user_id)
-            elif mafia_target.user_id != protected_id and (
-                mafia_target.role == Role.SOLDIER
-                and mafia_target.user_id not in self.soldier_bulletproof_used
+                add_mafia_team_kill(lover_savior)
+                lover_sacrifices.append((lover_savior, target))
+                return
+            if target.user_id == protected_id and enhanced_protection:
+                return
+            if not ignore_doctor and target.user_id == protected_id:
+                return
+            if allow_soldier_block and (
+                target.role == Role.SOLDIER
+                and target.user_id not in self.soldier_bulletproof_used
             ):
-                self.soldier_bulletproof_used.add(mafia_target.user_id)
-                self.publicly_revealed_ids.add(mafia_target.user_id)
-                soldier_blocks.append(mafia_target)
-            elif mafia_target.user_id != protected_id:
-                self._mark_dead(mafia_target)
-                killed_players.append(mafia_target)
-                killed_by_mafia_team_ids.add(mafia_target.user_id)
+                self.soldier_bulletproof_used.add(target.user_id)
+                self.publicly_revealed_ids.add(target.user_id)
+                soldier_blocks.append(target)
+                return
+            self._mark_dead(target)
+            add_mafia_team_kill(target)
+
+        resolve_mafia_team_attack(
+            mafia_target,
+            ignore_doctor=False,
+            allow_soldier_block=True,
+        )
+        resolve_mafia_team_attack(
+            godfather_target,
+            ignore_doctor=True,
+            allow_soldier_block=False,
+        )
 
         for contractor_kill in contractor_kills:
             if contractor_kill.alive:
@@ -1219,6 +1248,9 @@ class MafiaGame:
 
         graverobber_results = self._resolve_graverobbers(killed_players)
         agent_results = self._resolve_agent_results()
+        reporter_results = self._resolve_reporter_results(
+            {player.user_id for player in killed_players}
+        )
         for user_id in self.ensure_fanatic_reincarnation():
             if user_id not in fanatic_inherits:
                 fanatic_inherits.append(user_id)
@@ -1239,7 +1271,6 @@ class MafiaGame:
         self.spy_targets.clear()
         self.spy_bonus_pending.clear()
         self.spy_contacts_this_night.clear()
-        self.contractor_contact_targets.clear()
         self.contractor_contracts.clear()
         self.contractor_contacts_this_night.clear()
         self.witch_targets.clear()
@@ -1253,6 +1284,7 @@ class MafiaGame:
         self.day_votes.clear()
         self.confirm_votes.clear()
         self.phase = Phase.DAY
+        self._expire_madam_seductions()
         return NightResult(
             killed=killed_players[0] if killed_players else None,
             protected=protected,
@@ -1607,8 +1639,6 @@ class MafiaGame:
             targets = self.spy_targets.get(watched.user_id, [])
             return targets[-1] if targets else None
         if watched.role == Role.CONTRACTOR:
-            if watched.user_id in self.contractor_contact_targets:
-                return self.contractor_contact_targets.get(watched.user_id)
             contract = self.contractor_contracts.get(watched.user_id)
             return contract[0][0] if contract else None
         if watched.role == Role.WITCH:
@@ -1668,16 +1698,6 @@ class MafiaGame:
         results: dict[int, str] = {}
         kills: list[Player] = []
 
-        for actor_id, target_id in self.contractor_contact_targets.items():
-            actor = self.get_player(actor_id)
-            target = self.get_player(target_id)
-            if not actor or not actor.alive or not target:
-                continue
-            if target.role == Role.MAFIA and actor_id in self.contractor_contacts_this_night:
-                results[actor_id] = "[동업] 마피아와 접선했습니다."
-            else:
-                results[actor_id] = "[동업] 접선에 실패했습니다."
-
         for actor_id, contract in self.contractor_contracts.items():
             actor = self.get_player(actor_id)
             if not actor or not actor.alive:
@@ -1687,6 +1707,18 @@ class MafiaGame:
                 (self.get_player(target_id), guessed_role)
                 for target_id, guessed_role in contract
             ]
+            matched_mafia = any(
+                target
+                and target.alive
+                and target.role == Role.MAFIA
+                and guessed_role == Role.MAFIA
+                for target, guessed_role in targets
+            )
+            if matched_mafia:
+                self.contractor_contacted.add(actor_id)
+                if actor_id not in self.contractor_contacts_this_night:
+                    self.contractor_contacts_this_night.append(actor_id)
+
             success = all(
                 target
                 and target.alive
@@ -1697,12 +1729,16 @@ class MafiaGame:
             )
             if not success:
                 results[actor_id] = "대상의 정보가 정확하지 않아 암살에 실패했습니다."
+                if matched_mafia:
+                    results[actor_id] = "[동업] 마피아와 접선했습니다.\n" + results[actor_id]
                 continue
 
             for target, _guessed_role in targets:
                 if target and target not in kills:
                     kills.append(target)
             results[actor_id] = "청부가 성공했습니다. 대상 둘이 아침에 암살됩니다."
+            if matched_mafia:
+                results[actor_id] = "[동업] 마피아와 접선했습니다.\n" + results[actor_id]
 
         return results, list(self.contractor_contacts_this_night), kills
 
@@ -1739,12 +1775,13 @@ class MafiaGame:
             )
         return results, purifications
 
-    def _resolve_reporter_results(self) -> dict[int, str]:
+    def _resolve_reporter_results(self, blocked_actor_ids: set[int] | None = None) -> dict[int, str]:
+        blocked_actor_ids = blocked_actor_ids or set()
         results: dict[int, str] = {}
         for actor_id, target_id in self.reporter_targets.items():
             actor = self.get_player(actor_id)
             target = self.get_player(target_id)
-            if not actor or not actor.alive or not target:
+            if actor_id in blocked_actor_ids or not actor or not actor.alive or not target:
                 continue
             visible_role = self.visible_role(target)
             if visible_role != Role.FROG:
@@ -1974,11 +2011,6 @@ class MafiaGame:
         return 2 if actor_id in self.spy_bonus_pending else 1
 
     def _contractor_can_act(self, player: Player) -> bool:
-        alive_targets = [
-            target for target in self.alive_players() if target.user_id != player.user_id
-        ]
-        if player.user_id not in self.contractor_contacted and alive_targets:
-            return True
         return self.day_number >= 2 and len(self.contractor_contract_targets(player)) >= 2
 
     def _reporter_can_act(self, player: Player) -> bool:
@@ -1998,6 +2030,11 @@ class MafiaGame:
         self._expire_madam_seductions()
         self.phase = Phase.NIGHT
         self.day_number += 1
+
+    def _madam_seduction_release_day_after_death(self) -> int:
+        if self.phase == Phase.NIGHT:
+            return self.day_number + 1
+        return self.day_number + 2
 
     def _expire_madam_seductions(self) -> None:
         if any(player.alive and player.role == Role.MADAM for player in self.players):
