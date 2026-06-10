@@ -2148,13 +2148,14 @@ def can_use_anonymous_shaman_chat(running: RunningGame, player: Player) -> bool:
         player.role == Role.SHAMAN
         and running.game.phase == Phase.NIGHT
         and not running.game.is_frog(player)
+        and not running.game.is_madam_seduced(player)
     )
 
 
 def can_use_anonymous_role_chat(running: RunningGame, player: Player, role: Role) -> bool:
     if running.game.is_frog(player):
         return False
-    if running.game.is_madam_seduced(player) and role != Role.MAFIA:
+    if running.game.is_madam_seduced(player):
         return False
     if role == Role.LOVER:
         return player.alive and player.role == Role.LOVER and lover_chat_is_open(running.game)
@@ -4325,8 +4326,6 @@ async def sync_madam_seduction_permissions(
     for player in running.game.alive_players():
         if running.game.is_madam_seduced(player):
             for role in PRIVATE_CHAT_ROLES:
-                if role == Role.MAFIA and running.game.is_known_mafia_team(player):
-                    continue
                 await set_player_private_channel_access(
                     guild,
                     running,
@@ -5119,7 +5118,7 @@ async def handle_madam_seduction_result(
             running,
             player,
             "마담에게 유혹당했습니다. 다음 낮이 될 때까지 능력을 사용할 수 없고 말할 수 없습니다.\n"
-            "마피아팀이라면 능력 사용은 가능하며, 접대가 성립해 마피아 비밀방에 합류합니다.",
+            "마피아팀이라면 능력 사용은 가능하지만, 유혹 중에는 마피아 비밀방에도 말할 수 없습니다.",
         )
 
     for player in running.game.alive_players():
@@ -6044,7 +6043,7 @@ async def add_player_to_private_role_channel(
         can_access = (
             player.alive
             and not running.game.is_frog(player)
-            and not (running.game.is_madam_seduced(player) and channel_role != Role.MAFIA)
+            and not running.game.is_madam_seduced(player)
         )
         await set_anonymous_role_access(
             guild,
@@ -6070,7 +6069,7 @@ async def add_player_to_private_role_channel(
     member = await get_guild_member(guild, player.user_id)
     if not member:
         return
-    can_chat = not (running.game.is_madam_seduced(player) and channel_role != Role.MAFIA)
+    can_chat = not running.game.is_madam_seduced(player)
     try:
         await set_permissions_if_changed(
             channel,
@@ -6094,7 +6093,7 @@ async def set_player_private_channel_access(
     reason: str,
 ) -> None:
     if running.anonymous_enabled:
-        can_chat = can_chat and not (running.game.is_madam_seduced(player) and channel_role != Role.MAFIA)
+        can_chat = can_chat and not running.game.is_madam_seduced(player)
         await set_anonymous_role_access(
             guild,
             running,
@@ -6115,7 +6114,7 @@ async def set_player_private_channel_access(
     member = await get_guild_member(guild, player.user_id)
     if not member:
         return
-    can_chat = can_chat and not (running.game.is_madam_seduced(player) and channel_role != Role.MAFIA)
+    can_chat = can_chat and not running.game.is_madam_seduced(player)
     try:
         await set_permissions_if_changed(
             channel,
@@ -7975,7 +7974,7 @@ ROLE_ABILITY_TEXTS = {
     ),
     Role.MADAM: (
         ("유혹", "낮 지목 투표에서 마담이 투표한 플레이어를 다음 낮까지 유혹합니다. 유혹된 대상은 능력을 사용할 수 없고 말을 할 수 없습니다."),
-        ("접대", "유혹한 대상이 마피아팀이면 서로의 존재를 알아차리고 밤에 마피아 비밀방에서 대화할 수 있습니다."),
+        ("접대", "유혹한 대상이 마피아팀이면 서로의 존재를 알아차립니다. 유혹이 풀린 뒤 밤에 마피아 비밀방에서 대화할 수 있습니다."),
     ),
     Role.GODFATHER: (
         ("배후", "세 번째 밤이 시작되면 마피아팀과 자동으로 접선합니다."),
@@ -8109,7 +8108,7 @@ ROLE_RULE_TEXTS = {
         "접선 전에는 경찰 조사에서 마피아가 아니라고 나오며 생존 마피아 수에도 포함되지 않습니다.",
         "유혹은 마담이 낮 지목 투표에서 투표한 생존자에게 적용됩니다. 스킵 투표에는 적용되지 않습니다.",
         "유혹 상태는 다음 낮이 시작되면 해제됩니다.",
-        "유혹된 마피아팀은 밤 능력을 사용할 수 있지만, 접대가 성립해 마피아 비밀방에 합류합니다.",
+        "유혹된 마피아팀은 밤 능력을 사용할 수 있지만, 유혹 중에는 마피아 비밀방에도 말할 수 없습니다.",
     ),
     Role.GODFATHER: (
         "세 번째 밤 전에는 마피아 비밀방을 볼 수 없고 밤 행동도 없습니다.",
@@ -8139,7 +8138,7 @@ ROLE_RULE_TEXTS = {
 
 ROLE_ABILITY_TEXTS[Role.MADAM] = (
     ("유혹", "낮 지목 투표에서 마담이 투표한 플레이어를 다음 낮까지 유혹합니다. 유혹된 대상은 능력을 사용할 수 없고 말을 할 수 없습니다."),
-    ("접대", "유혹한 대상이 마피아팀이면 서로의 존재를 알아차리고 밤에 마피아 비밀방에서 대화할 수 있습니다."),
+    ("접대", "유혹한 대상이 마피아팀이면 서로의 존재를 알아차립니다. 유혹이 풀린 뒤 밤에 마피아 비밀방에서 대화할 수 있습니다."),
 )
 ROLE_ABILITY_TEXTS[Role.CONTRACTOR] = (
     ("청부", "두 번째 밤부터 생존자 두 명과 각 직업을 추측합니다. 둘 다 정확하고 청부 가능한 대상이면 암살합니다."),
@@ -8159,7 +8158,7 @@ ROLE_RULE_TEXTS[Role.MADAM] = (
     "경찰 조사에서는 접선 전 마담이 마피아로 표시되지 않으며, 생존 마피아 수에도 포함되지 않습니다.",
     "유혹은 마담이 낮 지목 투표에서 투표한 생존자에게 적용됩니다. 스킵 투표에는 적용되지 않습니다.",
     "유혹 상태는 다음 낮이 시작되면 해제됩니다.",
-    "유혹된 마피아팀은 밤 능력을 사용할 수 있지만, 접대가 성립해 마피아 비밀방에 합류합니다.",
+    "유혹된 마피아팀은 밤 능력을 사용할 수 있지만, 유혹 중에는 마피아 비밀방에도 말할 수 없습니다.",
 )
 
 
