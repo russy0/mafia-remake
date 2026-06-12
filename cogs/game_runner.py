@@ -944,18 +944,11 @@ async def run_night(
     await sync_lover_chat_access(guild, running, reason="마피아 게임 낮 시작으로 연인 채팅 권한 갱신")
     await sync_shaman_channel_permissions(guild, running, can_chat=False)
     await announce_night_private_results(guild, running, result)
-    for user_id in result.spy_contacts:
-        player = running.game.get_player(user_id)
-        if player:
-            await add_player_to_private_role_channel(guild, running, Role.MAFIA, player)
-    for user_id in result.contractor_contacts:
-        player = running.game.get_player(user_id)
-        if player:
-            await add_player_to_private_role_channel(guild, running, Role.MAFIA, player)
-    for user_id in result.witch_contacts:
-        player = running.game.get_player(user_id)
-        if player:
-            await add_player_to_private_role_channel(guild, running, Role.MAFIA, player)
+    mafia_contact_user_ids = [
+        *result.spy_contacts,
+        *result.contractor_contacts,
+        *result.witch_contacts,
+    ]
     for user_id in result.nurse_contacts:
         player = running.game.get_player(user_id)
         if player:
@@ -980,6 +973,7 @@ async def run_night(
         and result.mafia_target not in result.killed_players
         and not result.lover_sacrifices
     )
+    scientist_mafia_channel_players: list[Player] = []
     if result.killed_players:
         killed_lines: list[str] = []
         for killed in result.killed_players:
@@ -1004,14 +998,7 @@ async def run_night(
             await remove_frog_permissions(guild, running, killed)
             await disable_private_role_channel_for_player(guild, running, killed)
             if killed.role == Role.SCIENTIST and killed.user_id in running.game.scientist_contacted:
-                await set_player_private_channel_access(
-                    guild,
-                    running,
-                    Role.MAFIA,
-                    killed,
-                    can_chat=True,
-                    reason="마피아 게임 과학자 유착으로 마피아 채널 권한 부여",
-                )
+                scientist_mafia_channel_players.append(killed)
             if killed in result.contractor_kills:
                 line = (
                     f"- {killed.name} 님이 청부업자에게 정체를 들켜 암살 당했습니다. "
@@ -1073,6 +1060,19 @@ async def run_night(
             "아침이 밝았습니다. 아무도 사망하지 않았습니다.",
             title="밤 결과",
             include_dead=True,
+        )
+    for user_id in mafia_contact_user_ids:
+        player = running.game.get_player(user_id)
+        if player and player.alive:
+            await add_player_to_private_role_channel(guild, running, Role.MAFIA, player)
+    for scientist in scientist_mafia_channel_players:
+        await set_player_private_channel_access(
+            guild,
+            running,
+            Role.MAFIA,
+            scientist,
+            can_chat=True,
+            reason="마피아 게임 과학자 유착으로 마피아 채널 권한 부여",
         )
     if result.killed_players and doctor_saved and result.protected:
         await send_game_embed(
