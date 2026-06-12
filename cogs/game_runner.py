@@ -5,6 +5,7 @@ from bot import *  # noqa: F401,F403
 
 __all__ = (
     'game_loop',
+    'apply_day_channel_state',
     'run_vote_phase',
     'set_final_defense_mode',
     'send_hacker_day_actions',
@@ -94,25 +95,6 @@ async def game_loop(guild: discord.Guild, running: RunningGame) -> None:
             if await announce_winner(channel, running):
                 break
 
-            await set_game_channel_chat(
-                guild,
-                channel,
-                running,
-                participants_can_chat=True,
-                reason="마피아 게임 낮 토론 시작",
-            )
-            await sync_madam_seduction_permissions(
-                guild,
-                running,
-                reason="마피아 게임 낮 시작으로 마담 유혹 권한 갱신",
-            )
-            await set_channel_slowmode(
-                channel,
-                running,
-                config.chat_slowmode_seconds,
-                "마피아 게임 낮 토론 슬로우모드 적용",
-            )
-            await upsert_game_status(guild, running)
             day_result = await run_day_discussion(channel, running)
             if day_result == "stop":
                 break
@@ -137,6 +119,32 @@ async def game_loop(guild: discord.Guild, running: RunningGame) -> None:
         await cleanup_game(guild, running)
         if games.get(running.guild_id) is running:
             games.pop(running.guild_id, None)
+
+
+async def apply_day_channel_state(
+    guild: discord.Guild,
+    channel: discord.abc.Messageable,
+    running: RunningGame,
+) -> None:
+    await set_game_channel_chat(
+        guild,
+        channel,
+        running,
+        participants_can_chat=True,
+        reason="마피아 게임 낮 토론 시작",
+    )
+    await sync_madam_seduction_permissions(
+        guild,
+        running,
+        reason="마피아 게임 낮 시작으로 마담 유혹 권한 갱신",
+    )
+    await set_channel_slowmode(
+        channel,
+        running,
+        config.chat_slowmode_seconds,
+        "마피아 게임 낮 토론 슬로우모드 적용",
+    )
+    await upsert_game_status(guild, running)
 
 
 async def run_vote_phase(
@@ -932,6 +940,7 @@ async def run_night(
     running.night_timed_events_due = True
     trigger_timed_night_events(guild, channel, running)
     result = running.game.resolve_night()
+    await apply_day_channel_state(guild, channel, running)
     await sync_lover_chat_access(guild, running, reason="마피아 게임 낮 시작으로 연인 채팅 권한 갱신")
     await sync_shaman_channel_permissions(guild, running, can_chat=False)
     await announce_night_private_results(guild, running, result)
