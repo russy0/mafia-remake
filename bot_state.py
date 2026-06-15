@@ -106,6 +106,7 @@ class RunningGame:
     initial_roles: dict[int, Role] = field(default_factory=dict)
     stats_recorded: bool = False
     started_at: float = field(default_factory=time.monotonic)
+    day_chat_open: bool = False
 
 
 @dataclass

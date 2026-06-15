@@ -126,6 +126,7 @@ async def apply_day_channel_state(
     channel: discord.abc.Messageable,
     running: RunningGame,
 ) -> None:
+    running.day_chat_open = True
     await set_game_channel_chat(
         guild,
         channel,
@@ -476,6 +477,8 @@ async def run_day_discussion(
         )
     else:
         day_message = await send_embed(channel, day_message_text, view=vote_view, title="낮 토론")
+    if guild:
+        await apply_day_channel_state(guild, channel, running)
 
     while running.game.phase == Phase.DAY and games.get(running.guild_id) is running:
         if await wait_for_day_vote_or_timeout(running, discussion_seconds):
@@ -852,6 +855,7 @@ async def run_night(
     running: RunningGame,
 ) -> None:
     running.game.phase = Phase.NIGHT
+    running.day_chat_open = False
     running.game.police_result_announced = False
     await upsert_game_status(guild, running)
     running.night_complete_event.clear()
@@ -940,7 +944,6 @@ async def run_night(
     running.night_timed_events_due = True
     trigger_timed_night_events(guild, channel, running)
     result = running.game.resolve_night()
-    await apply_day_channel_state(guild, channel, running)
     await sync_lover_chat_access(guild, running, reason="마피아 게임 낮 시작으로 연인 채팅 권한 갱신")
     await sync_shaman_channel_permissions(guild, running, can_chat=False)
     await announce_night_private_results(guild, running, result)

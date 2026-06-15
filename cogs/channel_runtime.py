@@ -2474,6 +2474,7 @@ async def refresh_player_private_channel_access(
                     overwrite=anonymous_input_overwrite(
                         True,
                         running.game.phase == Phase.DAY
+                        and running.day_chat_open
                         and not running.game.is_frog(player)
                         and not running.game.is_madam_seduced(player),
                     ),

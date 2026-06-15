@@ -55,7 +55,7 @@ def can_use_anonymous_general_chat(running: RunningGame, player: Player) -> bool
         return False
     if running.game.is_madam_seduced(player):
         return False
-    if running.game.phase == Phase.DAY:
+    if running.game.phase == Phase.DAY and running.day_chat_open:
         return True
     return running.game.phase == Phase.FINAL_DEFENSE and running.final_defense_user_id == player.user_id
 
@@ -806,7 +806,7 @@ async def on_message(message: discord.Message) -> None:
         if not player or not running.game.is_frog(player):
             await delete_message_quietly(message)
             return
-        if running.game.phase != Phase.DAY:
+        if running.game.phase != Phase.DAY or not running.day_chat_open:
             await delete_message_quietly(message)
             return
 
