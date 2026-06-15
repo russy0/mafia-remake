@@ -125,6 +125,7 @@ async def show_my_info(interaction: discord.Interaction) -> None:
         app_commands.Choice(name="판수", value="games"),
         app_commands.Choice(name="마피아팀 횟수", value="mafia"),
         app_commands.Choice(name="게임시간", value="playtime"),
+        app_commands.Choice(name="레이팅", value="rating"),
     ]
 )
 async def show_leaderboard(
@@ -157,4 +158,3 @@ async def command_error(
     error: app_commands.AppCommandError,
 ) -> None:
     await send_command_error(interaction, error)
-
