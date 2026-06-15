@@ -14,6 +14,7 @@ from stats_store import (
 from time_text import play_duration_text
 
 
+BASE_DIR = Path(__file__).resolve().parent
 IMAGE_WIDTH = 1280
 TOP_PADDING = 40
 SIDE_PADDING = 48
@@ -35,13 +36,19 @@ RED = "#fb7185"
 
 FONT_PATHS = {
     "regular": (
+        BASE_DIR / "MalangmalangR.ttf",
         Path("C:/Windows/Fonts/malgun.ttf"),
+        Path("C:/Windows/Fonts/MalangmalangR.ttf"),
         Path("/usr/share/fonts/truetype/nanum/NanumGothic.ttf"),
         Path("/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc"),
         Path("/usr/share/fonts/truetype/noto/NotoSansKR-Regular.ttf"),
         Path("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"),
     ),
     "bold": (
+        BASE_DIR / "MalangmalangB.ttf",
+        BASE_DIR / "MalangmalangR.ttf",
+        Path("C:/Windows/Fonts/MalangmalangB.ttf"),
+        Path("C:/Windows/Fonts/MalangmalangR.ttf"),
         Path("C:/Windows/Fonts/malgunbd.ttf"),
         Path("/usr/share/fonts/truetype/nanum/NanumGothicBold.ttf"),
         Path("/usr/share/fonts/opentype/noto/NotoSansCJK-Bold.ttc"),
