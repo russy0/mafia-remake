@@ -68,6 +68,7 @@ from stats_store import (
     load_stats,
     personal_stats_text,
     player_won_game,
+    rating_log_text,
     record_game_stats,
     role_stats_text,
     save_stats,
@@ -147,6 +148,10 @@ def load_config() -> BotConfig:
         enable_priest=bool(data.get("enable_priest", True)),
         enable_soldier=bool(data.get("enable_soldier", True)),
         enable_nurse=bool(data.get("enable_nurse", True)),
+        enable_gangster=bool(data.get("enable_gangster", True)),
+        enable_prophet=bool(data.get("enable_prophet", True)),
+        enable_psychologist=bool(data.get("enable_psychologist", True)),
+        enable_thief=bool(data.get("enable_thief", True)),
         enable_cult_team=bool(data.get("enable_cult_team", False)),
         use_agent=bool(data.get("use_agent", False)),
         use_vigilante=bool(data.get("use_vigilante", False)),
@@ -376,6 +381,10 @@ def enabled_special_roles(pool: tuple[Role, ...]) -> list[Role]:
         Role.PRIEST: config.enable_priest,
         Role.SOLDIER: config.enable_soldier,
         Role.NURSE: config.enable_nurse,
+        Role.GANGSTER: config.enable_gangster,
+        Role.PROPHET: config.enable_prophet,
+        Role.PSYCHOLOGIST: config.enable_psychologist,
+        Role.THIEF: config.enable_thief,
     }
     return [role for role in pool if enabled[role]]
 
@@ -430,6 +439,9 @@ def minimum_player_count(role_counts: dict[Role, int]) -> int:
         role_counts.get(Role.MAFIA, 0)
         + role_counts.get(Role.SPY, 0)
         + role_counts.get(Role.CONTRACTOR, 0)
+        + role_counts.get(Role.THIEF, 0)
+        + role_counts.get(Role.WITCH, 0)
+        + role_counts.get(Role.SCIENTIST, 0)
         + role_counts.get(Role.MADAM, 0)
         + role_counts.get(Role.GODFATHER, 0)
     )
@@ -553,6 +565,7 @@ def current_settings_text(prefix: str = "마피아 설정을 저장했습니다.
             Role.GRAVEROBBER,
             Role.SPY,
             Role.CONTRACTOR,
+            Role.THIEF,
             Role.WITCH,
             Role.SCIENTIST,
             Role.MADAM,
@@ -567,6 +580,9 @@ def current_settings_text(prefix: str = "마피아 설정을 저장했습니다.
             Role.PRIEST,
             Role.SOLDIER,
             Role.NURSE,
+            Role.GANGSTER,
+            Role.PROPHET,
+            Role.PSYCHOLOGIST,
             Role.CULT_LEADER,
             Role.FANATIC,
         )
@@ -590,6 +606,10 @@ def current_settings_text(prefix: str = "마피아 설정을 저장했습니다.
             Role.PRIEST: config.enable_priest,
             Role.SOLDIER: config.enable_soldier,
             Role.NURSE: config.enable_nurse,
+            Role.GANGSTER: config.enable_gangster,
+            Role.PROPHET: config.enable_prophet,
+            Role.PSYCHOLOGIST: config.enable_psychologist,
+            Role.THIEF: config.enable_thief,
             Role.CULT_LEADER: config.enable_cult_team,
             Role.FANATIC: config.enable_cult_team,
         }[role]

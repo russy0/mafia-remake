@@ -47,6 +47,10 @@ class BotConfig:
     enable_priest: bool = True
     enable_soldier: bool = True
     enable_nurse: bool = True
+    enable_gangster: bool = True
+    enable_prophet: bool = True
+    enable_psychologist: bool = True
+    enable_thief: bool = True
     enable_cult_team: bool = False
     use_agent: bool = False
     use_vigilante: bool = False

@@ -121,6 +121,19 @@ async def show_my_info(interaction: discord.Interaction) -> None:
     )
 
 
+@bot.tree.command(name="레이팅로그", description="내 최근 레이팅 변화 기록을 확인합니다.")
+async def show_rating_log(interaction: discord.Interaction) -> None:
+    fallback_name = (
+        display_name(interaction.user)
+        if isinstance(interaction.user, discord.Member)
+        else interaction.user.name
+    )
+    await interaction.response.send_message(
+        embed=make_embed(rating_log_text(interaction.user.id, fallback_name), title="레이팅 로그"),
+        ephemeral=True,
+    )
+
+
 @bot.tree.command(name="리더보드", description="마피아 게임 전적 순위를 확인합니다.")
 @app_commands.describe(기준="순위를 세울 기준")
 @app_commands.choices(
@@ -162,6 +175,7 @@ async def reset_leaderboard(interaction: discord.Interaction) -> None:
 @show_public_status.error
 @write_memo.error
 @show_my_info.error
+@show_rating_log.error
 @show_leaderboard.error
 @reset_leaderboard.error
 async def command_error(

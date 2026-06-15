@@ -10,6 +10,8 @@ __all__ = (
     'set_final_defense_mode',
     'send_hacker_day_actions',
     'send_vigilante_day_actions',
+    'send_psychologist_day_actions',
+    'send_thief_vote_actions',
     'run_day_discussion',
     'send_roles',
     'restore_frogs_for_new_night',
@@ -174,11 +176,16 @@ async def run_vote_phase(
         view=DayVoteView(running.guild_id, alive),
         title="지목 투표 시작",
     )
+    await send_thief_vote_actions(channel, running)
     await wait_for_event_or_timeout(running.vote_complete_event, config.vote_seconds)
 
     vote_result = running.game.resolve_nomination_vote()
     await handle_madam_seduction_result(guild, running, vote_result)
     vote_summary = anonymous_vote_summary(running.game, vote_result)
+    blocked_notice = ""
+    if vote_result.blocked_voters:
+        blocked_names = ", ".join(player.name for player in vote_result.blocked_voters)
+        blocked_notice = f"\n\n공갈로 투표권을 잃은 참가자: {blocked_names}"
     nominee = vote_result.executed
     if not nominee:
         if vote_result.tied:
@@ -191,7 +198,7 @@ async def run_vote_phase(
             guild,
             channel,
             running,
-            f"{message}\n\n익명 투표 집계\n{vote_summary}",
+            f"{message}{blocked_notice}\n\n익명 투표 집계\n{vote_summary}",
             title="지목 투표 결과",
         )
         return
@@ -200,7 +207,7 @@ async def run_vote_phase(
         guild,
         channel,
         running,
-        f"지목 투표 결과, {nominee.name} 님이 최후변론 대상이 되었습니다.\n\n익명 투표 집계\n{vote_summary}",
+        f"지목 투표 결과, {nominee.name} 님이 최후변론 대상이 되었습니다.{blocked_notice}\n\n익명 투표 집계\n{vote_summary}",
         title="지목 투표 결과",
     )
     await set_final_defense_mode(guild, channel, running, nominee)
@@ -445,6 +452,70 @@ async def send_vigilante_day_actions(
         )
 
 
+async def send_psychologist_day_actions(
+    channel: discord.abc.Messageable,
+    running: RunningGame,
+) -> None:
+    guild = bot.get_guild(running.guild_id)
+    if not guild:
+        return
+    failed_names: list[str] = []
+    for actor in running.game.psychologist_day_actors():
+        targets = [
+            player
+            for player in sorted(running.game.alive_players(), key=lambda item: item.name.casefold())
+            if player.user_id != actor.user_id
+        ]
+        sent = await send_player_secret(
+            guild,
+            running,
+            actor,
+            "심리학자 낮 행동을 선택하세요.\n"
+            "자신을 제외한 생존자 2명을 선택하면 두 사람이 같은 팀인지 즉시 확인합니다.",
+            PsychologistDayActionView(running.guild_id, actor, targets),
+        )
+        if not sent:
+            failed_names.append(actor.name)
+    if failed_names:
+        await send_embed(
+            channel,
+            "심리학자 낮 행동 선택지를 보낼 수 없는 참가자: " + ", ".join(failed_names),
+            color=ERROR_EMBED_COLOR,
+        )
+
+
+async def send_thief_vote_actions(
+    channel: discord.abc.Messageable,
+    running: RunningGame,
+) -> None:
+    guild = bot.get_guild(running.guild_id)
+    if not guild:
+        return
+    failed_names: list[str] = []
+    for actor in running.game.thief_vote_actors():
+        targets = [
+            player
+            for player in sorted(running.game.alive_players(), key=lambda item: item.name.casefold())
+            if player.user_id != actor.user_id
+        ]
+        sent = await send_player_secret(
+            guild,
+            running,
+            actor,
+            "도둑 투표 시간 행동을 선택하세요.\n"
+            "하루에 한 번 플레이어 한 명의 직업 능력을 훔쳐 다음 밤까지 사용할 수 있습니다.",
+            ThiefVoteActionView(running.guild_id, actor, targets),
+        )
+        if not sent:
+            failed_names.append(actor.name)
+    if failed_names:
+        await send_embed(
+            channel,
+            "도둑 도벽 선택지를 보낼 수 없는 참가자: " + ", ".join(failed_names),
+            color=ERROR_EMBED_COLOR,
+        )
+
+
 async def run_day_discussion(
     channel: discord.abc.Messageable,
     running: RunningGame,
@@ -458,6 +529,7 @@ async def run_day_discussion(
     vote_view = DaySkipToVoteView(running.guild_id, alive_user_ids)
     await send_hacker_day_actions(channel, running)
     await send_vigilante_day_actions(channel, running)
+    await send_psychologist_day_actions(channel, running)
     day_message_text = (
         f"{running.game.day_number}일차 낮입니다. {discussion_time} 동안 자유롭게 토론하세요.\n"
         "생존자 과반이 `바로 투표`를 누르면 토론과 연장을 끝내고 바로 지목 투표로 넘어갑니다.\n"
@@ -919,12 +991,13 @@ async def run_night(
             continue
         targets = night_targets(running.game, actor)
         if targets:
+            effective_role = running.game.thief_night_role(actor) if actor.role == Role.THIEF else actor.role
             sent = await send_player_secret(
                 guild,
                 running,
                 actor,
-                f"{actor.role.value} 밤 행동을 선택하세요.",
-                NightActionView(running.guild_id, actor, targets),
+                f"{(effective_role or actor.role).value} 밤 행동을 선택하세요.",
+                NightActionView(running.guild_id, actor, targets, effective_role),
             )
             if not sent:
                 failed_names.append(actor.name)
@@ -1211,6 +1284,7 @@ async def announce_night_private_results(
         **result.godfather_results,
         **result.vigilante_results,
         **result.nurse_results,
+        **result.gangster_results,
         **result.cult_results,
         **result.fanatic_results,
     }.items():
@@ -1333,25 +1407,28 @@ async def announce_morning_mafia_count(
 
 def night_targets(game: MafiaGame, actor: Player) -> list[Player]:
     alive = sorted(game.alive_players(), key=lambda player: player.name.casefold())
-    if actor.role == Role.MAFIA:
+    effective_role = game.thief_night_role(actor) if actor.role == Role.THIEF else actor.role
+    if effective_role is None:
+        return []
+    if effective_role == Role.MAFIA:
         return [player for player in alive if game.can_mafia_attack(player, actor.user_id)]
-    if actor.role == Role.DOCTOR:
+    if effective_role == Role.DOCTOR:
         return alive
-    if actor.role == Role.NURSE:
+    if effective_role == Role.NURSE:
         if actor.user_id in game.nurse_contacted:
             return alive if not game.alive_role_count(Role.DOCTOR) else []
         return [player for player in alive if player.user_id != actor.user_id]
-    if actor.role == Role.SHAMAN:
+    if effective_role == Role.SHAMAN:
         return sorted(game.unpurified_dead_players(), key=lambda player: player.name.casefold())
-    if actor.role == Role.PRIEST:
+    if effective_role == Role.PRIEST:
         return sorted(game.unpurified_dead_players(), key=lambda player: player.name.casefold())
-    if actor.role == Role.CULT_LEADER:
+    if effective_role == Role.CULT_LEADER:
         return [
             player
             for player in alive
             if player.user_id != actor.user_id and not game.is_cult_team(player)
         ]
-    if actor.role in {
+    if effective_role in {
         Role.POLICE,
         Role.REPORTER,
         Role.DETECTIVE,
@@ -1360,11 +1437,12 @@ def night_targets(game: MafiaGame, actor: Player) -> list[Player]:
         Role.GODFATHER,
         Role.TERRORIST,
         Role.FANATIC,
+        Role.GANGSTER,
     }:
         return [player for player in alive if player.user_id != actor.user_id]
-    if actor.role == Role.VIGILANTE:
+    if effective_role == Role.VIGILANTE:
         return sorted(game.vigilante_execution_targets(actor), key=lambda player: player.name.casefold())
-    if actor.role == Role.CONTRACTOR:
+    if effective_role == Role.CONTRACTOR:
         return sorted(game.contractor_contract_targets(actor), key=lambda player: player.name.casefold())
     return []
 

@@ -204,6 +204,10 @@ async def configure_anonymous_mode(
     lover="연인 역할 활성화 여부. 선택되면 연인 2명이 함께 배정됩니다.",
     priest="성직자 역할 활성화 여부",
     madam="마담 역할 활성화 여부",
+    gangster="건달 역할 활성화 여부",
+    prophet="예언자 역할 활성화 여부",
+    psychologist="심리학자 역할 활성화 여부",
+    thief="도둑 역할 활성화 여부",
     cult_team="교주팀 활성화 여부. 켜면 교주와 광신도가 함께 배정됩니다.",
 )
 async def configure_extra_roles(
@@ -212,6 +216,10 @@ async def configure_extra_roles(
     lover: bool | None = None,
     priest: bool | None = None,
     madam: bool | None = None,
+    gangster: bool | None = None,
+    prophet: bool | None = None,
+    psychologist: bool | None = None,
+    thief: bool | None = None,
     cult_team: bool | None = None,
 ) -> None:
     require_manager(interaction)
@@ -224,6 +232,14 @@ async def configure_extra_roles(
         updates["enable_priest"] = priest
     if madam is not None:
         updates["enable_madam"] = madam
+    if gangster is not None:
+        updates["enable_gangster"] = gangster
+    if prophet is not None:
+        updates["enable_prophet"] = prophet
+    if psychologist is not None:
+        updates["enable_psychologist"] = psychologist
+    if thief is not None:
+        updates["enable_thief"] = thief
     if cult_team is not None:
         updates["enable_cult_team"] = cult_team
 
@@ -294,4 +310,3 @@ async def command_error(
     error: app_commands.AppCommandError,
 ) -> None:
     await send_command_error(interaction, error)
-

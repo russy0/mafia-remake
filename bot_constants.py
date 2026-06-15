@@ -49,10 +49,29 @@ CITIZEN_SPECIAL_ROLES = (
     Role.LOVER,
     Role.SOLDIER,
     Role.NURSE,
+    Role.GANGSTER,
+    Role.PROPHET,
+    Role.PSYCHOLOGIST,
 )
-MAFIA_SPECIAL_ROLES = (Role.SPY, Role.CONTRACTOR, Role.WITCH, Role.SCIENTIST, Role.MADAM, Role.GODFATHER)
+MAFIA_SPECIAL_ROLES = (
+    Role.SPY,
+    Role.CONTRACTOR,
+    Role.THIEF,
+    Role.WITCH,
+    Role.SCIENTIST,
+    Role.MADAM,
+    Role.GODFATHER,
+)
 NEUTRAL_SPECIAL_ROLES = (Role.JOKER,)
-PUBLIC_MAFIA_SPECIAL_ROLES = (Role.SPY, Role.CONTRACTOR, Role.WITCH, Role.SCIENTIST, Role.MADAM, Role.GODFATHER)
+PUBLIC_MAFIA_SPECIAL_ROLES = (
+    Role.SPY,
+    Role.CONTRACTOR,
+    Role.THIEF,
+    Role.WITCH,
+    Role.SCIENTIST,
+    Role.MADAM,
+    Role.GODFATHER,
+)
 PUBLIC_CITIZEN_SPECIAL_ROLES = (
     Role.DETECTIVE,
     Role.SHAMAN,
@@ -66,6 +85,9 @@ PUBLIC_CITIZEN_SPECIAL_ROLES = (
     Role.LOVER,
     Role.SOLDIER,
     Role.NURSE,
+    Role.GANGSTER,
+    Role.PROPHET,
+    Role.PSYCHOLOGIST,
     Role.FANATIC,
 )
 PUBLIC_NEUTRAL_SPECIAL_ROLES = (Role.JOKER,)
@@ -76,6 +98,7 @@ CONTRACTOR_GUESS_ROLES = (
     Role.WITCH,
     Role.SCIENTIST,
     Role.MADAM,
+    Role.THIEF,
     Role.DETECTIVE,
     Role.SHAMAN,
     Role.PRIEST,
@@ -88,6 +111,9 @@ CONTRACTOR_GUESS_ROLES = (
     Role.LOVER,
     Role.SOLDIER,
     Role.NURSE,
+    Role.GANGSTER,
+    Role.PROPHET,
+    Role.PSYCHOLOGIST,
     Role.CULT_LEADER,
     Role.FANATIC,
     Role.JOKER,

@@ -11,6 +11,10 @@ __all__ = (
     'HackerDayActionView',
     'VigilanteDayActionSelect',
     'VigilanteDayActionView',
+    'PsychologistDayActionSelect',
+    'PsychologistDayActionView',
+    'ThiefVoteActionSelect',
+    'ThiefVoteActionView',
     'ContractorTargetSelect',
     'ContractorRoleSelect',
     'ContractorContractView',
@@ -359,6 +363,8 @@ class NightActionSelect(discord.ui.Select[discord.ui.View]):
             Role.WITCH: "저주할 대상을 선택하세요",
             Role.GODFATHER: "확정 처치할 대상을 선택하세요",
             Role.TERRORIST: "지목할 대상을 선택하세요",
+            Role.GANGSTER: "공갈할 대상을 선택하세요",
+            Role.THIEF: "도벽으로 훔친 능력의 대상을 선택하세요",
             Role.CULT_LEADER: "포교할 대상을 선택하세요",
             Role.FANATIC: "추종할 대상을 선택하세요",
         }[role]
@@ -390,7 +396,10 @@ class NightActionSelect(discord.ui.Select[discord.ui.View]):
 
         actor = running.game.get_player(self.actor_id)
         immediate_result: str | None = None
-        if actor and actor.role == Role.POLICE:
+        if actor and (
+            actor.role == Role.POLICE
+            or (actor.role == Role.THIEF and running.game.thief_night_role(actor) == Role.POLICE)
+        ):
             immediate_result = running.game.consume_ready_police_result()
             if immediate_result:
                 guild = bot.get_guild(running.guild_id)
@@ -403,7 +412,10 @@ class NightActionSelect(discord.ui.Select[discord.ui.View]):
                     )
             else:
                 immediate_result = "다른 경찰의 선택이 남아 있어 조사 결과는 아직 확정되지 않았습니다."
-        if actor and actor.role == Role.MAFIA:
+        if actor and (
+            actor.role == Role.MAFIA
+            or (actor.role == Role.THIEF and running.game.thief_night_role(actor) == Role.MAFIA)
+        ):
             guild = bot.get_guild(running.guild_id)
             if guild:
                 await sync_role_status_message(guild, running, Role.MAFIA)
@@ -450,9 +462,15 @@ class NightActionSelect(discord.ui.Select[discord.ui.View]):
 
 
 class NightActionView(discord.ui.View):
-    def __init__(self, guild_id: int, actor: Player, targets: list[Player]) -> None:
+    def __init__(
+        self,
+        guild_id: int,
+        actor: Player,
+        targets: list[Player],
+        role: Role | None = None,
+    ) -> None:
         super().__init__(timeout=None)
-        self.add_item(NightActionSelect(guild_id, actor.user_id, actor.role, targets))
+        self.add_item(NightActionSelect(guild_id, actor.user_id, role or actor.role, targets))
 
 
 class HackerDayActionSelect(discord.ui.Select[discord.ui.View]):
@@ -552,6 +570,109 @@ class VigilanteDayActionView(discord.ui.View):
     def __init__(self, guild_id: int, actor: Player, targets: list[Player]) -> None:
         super().__init__(timeout=None)
         self.add_item(VigilanteDayActionSelect(guild_id, actor.user_id, targets))
+
+
+class PsychologistDayActionSelect(discord.ui.Select[discord.ui.View]):
+    def __init__(self, guild_id: int, actor_id: int, targets: list[Player]) -> None:
+        options = [
+            discord.SelectOption(label=target_select_label(target, actor_id), value=str(target.user_id))
+            for target in targets[:25]
+        ]
+        super().__init__(
+            placeholder="관찰할 두 명을 선택하세요",
+            min_values=2,
+            max_values=2,
+            options=options,
+        )
+        self.guild_id = guild_id
+        self.actor_id = actor_id
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        if interaction.user.id != self.actor_id:
+            await send_interaction_reply(interaction, "본인에게 온 선택지만 사용할 수 있습니다.", private=True)
+            return
+
+        running = games.get(self.guild_id)
+        if not running:
+            await send_interaction_reply(interaction, "진행 중인 게임이 없습니다.", private=True)
+            return
+
+        try:
+            first_id, second_id = (int(value) for value in self.values[:2])
+            result = running.game.submit_psychologist_observation(
+                self.actor_id,
+                first_id,
+                second_id,
+            )
+        except ValueError as error:
+            await send_interaction_reply(interaction, str(error), private=True)
+            return
+
+        disable_view_items(self.view)
+        await interaction.response.edit_message(
+            content=None,
+            embed=make_embed(result, title="심리학자 관찰 완료", color=SUCCESS_EMBED_COLOR),
+            view=self.view,
+        )
+
+
+class PsychologistDayActionView(discord.ui.View):
+    def __init__(self, guild_id: int, actor: Player, targets: list[Player]) -> None:
+        super().__init__(timeout=None)
+        self.add_item(PsychologistDayActionSelect(guild_id, actor.user_id, targets))
+
+
+class ThiefVoteActionSelect(discord.ui.Select[discord.ui.View]):
+    def __init__(self, guild_id: int, actor_id: int, targets: list[Player]) -> None:
+        options = [
+            discord.SelectOption(label=target_select_label(target, actor_id), value=str(target.user_id))
+            for target in targets[:25]
+        ]
+        super().__init__(
+            placeholder="도벽 대상을 선택하세요",
+            min_values=1,
+            max_values=1,
+            options=options,
+        )
+        self.guild_id = guild_id
+        self.actor_id = actor_id
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        if interaction.user.id != self.actor_id:
+            await send_interaction_reply(interaction, "본인에게 온 선택지만 사용할 수 있습니다.", private=True)
+            return
+
+        running = games.get(self.guild_id)
+        if not running:
+            await send_interaction_reply(interaction, "진행 중인 게임이 없습니다.", private=True)
+            return
+
+        was_contacted = self.actor_id in running.game.thief_contacted
+        try:
+            result = running.game.submit_thief_steal(self.actor_id, int(self.values[0]))
+        except ValueError as error:
+            await send_interaction_reply(interaction, str(error), private=True)
+            return
+
+        actor = running.game.get_player(self.actor_id)
+        if actor and self.actor_id in running.game.thief_contacted and not was_contacted:
+            guild = bot.get_guild(running.guild_id)
+            if guild:
+                await add_player_to_private_role_channel(guild, running, Role.MAFIA, actor)
+                await sync_role_status_message(guild, running, Role.MAFIA)
+
+        disable_view_items(self.view)
+        await interaction.response.edit_message(
+            content=None,
+            embed=make_embed(result, title="도벽 완료", color=SUCCESS_EMBED_COLOR),
+            view=self.view,
+        )
+
+
+class ThiefVoteActionView(discord.ui.View):
+    def __init__(self, guild_id: int, actor: Player, targets: list[Player]) -> None:
+        super().__init__(timeout=None)
+        self.add_item(ThiefVoteActionSelect(guild_id, actor.user_id, targets))
 
 
 class ContractorTargetSelect(discord.ui.Select[discord.ui.View]):
@@ -871,7 +992,11 @@ class DaySkipToVoteView(discord.ui.View):
 
 
 def has_changeable_mafia_action(running: RunningGame) -> bool:
-    return any(actor.role == Role.MAFIA for actor in running.game.night_action_actors())
+    return any(
+        actor.role == Role.MAFIA
+        or (actor.role == Role.THIEF and running.game.thief_night_role(actor) == Role.MAFIA)
+        for actor in running.game.night_action_actors()
+    )
 
 
 def should_finish_night_early(running: RunningGame) -> bool:

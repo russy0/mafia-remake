@@ -74,6 +74,8 @@ class MafiaGame:
         self.nurse_prescription_targets: dict[int, int] = {}
         self.nurse_contacted: set[int] = set()
         self.nurse_contacts_this_night: list[int] = []
+        self.gangster_targets: dict[int, int] = {}
+        self.gangster_blocked_vote_days: dict[int, int] = {}
         self.police_targets: dict[int, int] = {}
         self.vigilante_targets: dict[int, int] = {}
         self.vigilante_pending_results: dict[int, int] = {}
@@ -87,6 +89,7 @@ class MafiaGame:
         self.hacker_pending_results: dict[int, int] = {}
         self.hacker_used_ids: set[int] = set()
         self.hacker_proxy_targets: dict[int, int] = {}
+        self.psychologist_used_days: dict[int, int] = {}
         self.detective_targets: dict[int, int] = {}
         self.shaman_targets: dict[int, int] = {}
         self.priest_targets: dict[int, int] = {}
@@ -96,6 +99,9 @@ class MafiaGame:
         self.spy_contacts_this_night: list[int] = []
         self.contractor_contracts: dict[int, tuple[tuple[int, Role], tuple[int, Role]]] = {}
         self.contractor_contacts_this_night: list[int] = []
+        self.thief_used_days: dict[int, int] = {}
+        self.thief_stolen_roles: dict[int, Role] = {}
+        self.thief_contacted: set[int] = set()
         self.witch_targets: dict[int, int] = {}
         self.witch_contacted: set[int] = set()
         self.witch_contacts_this_night: list[int] = []
@@ -237,6 +243,8 @@ class MafiaGame:
             return player.user_id in self.spy_contacted
         if player.role == Role.CONTRACTOR:
             return player.user_id in self.contractor_contacted
+        if player.role == Role.THIEF:
+            return player.user_id in self.thief_contacted
         if player.role == Role.WITCH:
             return player.user_id in self.witch_contacted
         if player.role == Role.SCIENTIST:
@@ -278,6 +286,12 @@ class MafiaGame:
             elif player.role == Role.DOCTOR:
                 actors.append(player)
             elif player.role == Role.NURSE and self._nurse_can_act(player):
+                actors.append(player)
+            elif player.role == Role.GANGSTER and any(
+                target.user_id != player.user_id for target in alive
+            ):
+                actors.append(player)
+            elif player.role == Role.THIEF and self._thief_can_act_at_night(player):
                 actors.append(player)
             elif player.role in {Role.POLICE, Role.DETECTIVE, Role.SPY, Role.TERRORIST} and any(
                 target.user_id != player.user_id for target in alive
@@ -325,6 +339,10 @@ class MafiaGame:
             return actor.user_id in self.doctor_targets
         if actor.role == Role.NURSE:
             return actor.user_id in self.nurse_targets or actor.user_id in self.nurse_prescription_targets
+        if actor.role == Role.GANGSTER:
+            return actor.user_id in self.gangster_targets
+        if actor.role == Role.THIEF:
+            return self._stolen_night_action_submitted(actor)
         if actor.role == Role.POLICE:
             return actor.user_id in self.police_targets
         if actor.role == Role.VIGILANTE:
@@ -357,6 +375,69 @@ class MafiaGame:
         if player.user_id in self.nurse_contacted:
             return not self.alive_role_count(Role.DOCTOR) and bool(self.alive_players())
         return any(target.user_id != player.user_id for target in self.alive_players())
+
+    def thief_night_role(self, player: Player) -> Role | None:
+        if player.role != Role.THIEF:
+            return None
+        role = self.thief_stolen_roles.get(player.user_id)
+        if role in {
+            Role.MAFIA,
+            Role.DOCTOR,
+            Role.POLICE,
+            Role.REPORTER,
+            Role.DETECTIVE,
+            Role.SPY,
+            Role.SHAMAN,
+            Role.PRIEST,
+            Role.WITCH,
+            Role.GODFATHER,
+            Role.TERRORIST,
+            Role.GANGSTER,
+        }:
+            return role
+        return None
+
+    def _thief_can_act_at_night(self, player: Player) -> bool:
+        role = self.thief_night_role(player)
+        if role is None:
+            return False
+        if role in {Role.MAFIA, Role.DOCTOR}:
+            return bool(self.alive_players())
+        if role in {Role.SHAMAN, Role.PRIEST}:
+            return bool(self.unpurified_dead_players())
+        if role == Role.REPORTER:
+            return self._reporter_can_act(player)
+        if role == Role.GODFATHER:
+            return any(target.user_id != player.user_id for target in self.alive_players())
+        return any(target.user_id != player.user_id for target in self.alive_players())
+
+    def _stolen_night_action_submitted(self, actor: Player) -> bool:
+        role = self.thief_night_role(actor)
+        if role == Role.MAFIA:
+            return actor.user_id in self.mafia_targets
+        if role == Role.DOCTOR:
+            return actor.user_id in self.doctor_targets
+        if role == Role.POLICE:
+            return actor.user_id in self.police_targets
+        if role == Role.REPORTER:
+            return actor.user_id in self.reporter_targets or actor.user_id in self.reporter_skip_submitted
+        if role == Role.DETECTIVE:
+            return actor.user_id in self.detective_targets
+        if role == Role.SPY:
+            return bool(self.spy_targets.get(actor.user_id))
+        if role == Role.SHAMAN:
+            return actor.user_id in self.shaman_targets
+        if role == Role.PRIEST:
+            return actor.user_id in self.priest_targets
+        if role == Role.WITCH:
+            return actor.user_id in self.witch_targets
+        if role == Role.GODFATHER:
+            return actor.user_id in self.godfather_targets
+        if role == Role.TERRORIST:
+            return actor.user_id in self.terrorist_action_submitted
+        if role == Role.GANGSTER:
+            return actor.user_id in self.gangster_targets
+        return True
 
     def _cult_leader_can_act(self, player: Player) -> bool:
         return self.day_number % 2 == 1 and any(
@@ -471,8 +552,101 @@ class MafiaGame:
         self.vigilante_pending_results.clear()
         return results
 
+    def psychologist_day_actors(self) -> list[Player]:
+        if self.phase != Phase.DAY:
+            return []
+        return [
+            player
+            for player in self.alive_players()
+            if player.role == Role.PSYCHOLOGIST
+            and not self.is_madam_seduced(player)
+            and self.psychologist_used_days.get(player.user_id) != self.day_number
+            and len([target for target in self.alive_players() if target.user_id != player.user_id]) >= 2
+        ]
+
+    def submit_psychologist_observation(
+        self,
+        actor_id: int,
+        first_target_id: int,
+        second_target_id: int,
+    ) -> str:
+        if self.phase != Phase.DAY:
+            raise ValueError("심리학자 관찰은 낮에만 사용할 수 있습니다.")
+        actor = self._require_alive(actor_id)
+        if actor.role != Role.PSYCHOLOGIST:
+            raise ValueError("심리학자만 관찰을 사용할 수 있습니다.")
+        if self.is_madam_seduced(actor):
+            raise ValueError("마담에게 유혹당한 상태에서는 능력을 사용할 수 없습니다.")
+        if self.psychologist_used_days.get(actor_id) == self.day_number:
+            raise ValueError("오늘은 이미 관찰을 사용했습니다.")
+        if first_target_id == second_target_id:
+            raise ValueError("서로 다른 두 명을 선택해야 합니다.")
+        if actor_id in {first_target_id, second_target_id}:
+            raise ValueError("심리학자는 자기 자신을 관찰 대상으로 고를 수 없습니다.")
+        first = self._require_alive(first_target_id)
+        second = self._require_alive(second_target_id)
+        self.psychologist_used_days[actor_id] = self.day_number
+        same_team = self._team_key(first) == self._team_key(second)
+        relation = "같은 팀입니다" if same_team else "다른 팀입니다"
+        return f"[관찰] {first.name} 님과 {second.name} 님은 **{relation}**."
+
+    def thief_vote_actors(self) -> list[Player]:
+        if self.phase != Phase.VOTE:
+            return []
+        return [
+            player
+            for player in self.alive_players()
+            if player.role == Role.THIEF
+            and not self.is_frog(player)
+            and self.thief_used_days.get(player.user_id) != self.day_number
+            and any(target.user_id != player.user_id for target in self.alive_players())
+        ]
+
+    def submit_thief_steal(self, actor_id: int, target_id: int) -> str:
+        if self.phase != Phase.VOTE:
+            raise ValueError("도둑의 도벽은 투표 시간에만 사용할 수 있습니다.")
+        actor = self._require_alive(actor_id)
+        if actor.role != Role.THIEF:
+            raise ValueError("도둑만 도벽을 사용할 수 있습니다.")
+        if self.is_frog(actor):
+            raise ValueError("개구리 상태에서는 능력을 사용할 수 없습니다.")
+        if self.thief_used_days.get(actor_id) == self.day_number:
+            raise ValueError("오늘은 이미 도벽을 사용했습니다.")
+        target = self._require_alive(target_id)
+        if actor_id == target_id:
+            raise ValueError("도둑은 자기 자신을 훔칠 수 없습니다.")
+
+        self.thief_used_days[actor_id] = self.day_number
+        self.thief_stolen_roles[actor_id] = target.role
+        contacted_now = False
+        if self.is_mafia_team(target) and actor_id not in self.thief_contacted:
+            self.thief_contacted.add(actor_id)
+            contacted_now = True
+
+        lines = [
+            f"[도벽] {target.name} 님의 직업 능력을 훔쳤습니다.",
+            f"다음 밤까지 **{target.role.value}** 능력을 사용할 수 있습니다.",
+        ]
+        if contacted_now:
+            lines.append("[교련] 마피아 직업을 훔쳐 마피아팀과 접선했습니다.")
+        return "\n".join(lines)
+
+    def _team_key(self, player: Player) -> str:
+        if self.is_cult_team(player):
+            return "cult"
+        if self.is_mafia_team(player):
+            return "mafia"
+        if player.role == Role.JOKER:
+            return "joker"
+        return "citizen"
+
     def _police_action_actors(self) -> list[Player]:
-        return [player for player in self.night_action_actors() if player.role == Role.POLICE]
+        return [
+            player
+            for player in self.night_action_actors()
+            if player.role == Role.POLICE
+            or (player.role == Role.THIEF and self.thief_night_role(player) == Role.POLICE)
+        ]
 
     def police_result_ready(self) -> bool:
         actors = self._police_action_actors()
@@ -545,7 +719,10 @@ class MafiaGame:
     def all_day_votes_submitted(self) -> bool:
         if self.phase != Phase.VOTE:
             return False
-        return all(player.user_id in self.day_votes for player in self.alive_players())
+        return all(
+            player.user_id in self.day_votes or self._vote_blocked(player.user_id)
+            for player in self.alive_players()
+        )
 
     def all_confirm_votes_submitted(self) -> bool:
         if self.phase != Phase.CONFIRM_VOTE:
@@ -560,6 +737,9 @@ class MafiaGame:
             raise ValueError("개구리 상태에서는 밤 행동을 사용할 수 없습니다.")
         if self.is_madam_seduced(actor) and not self.is_mafia_team(actor):
             raise ValueError("마담에게 유혹당한 상태에서는 능력을 사용할 수 없습니다.")
+
+        if actor.role == Role.THIEF:
+            return self._submit_stolen_night_action(actor, target_id)
 
         if actor.role == Role.MAFIA:
             if target_id is None:
@@ -606,6 +786,18 @@ class MafiaGame:
                 self.nurse_contacts_this_night.append(actor_id)
                 return "[처방] 의사와 접선했습니다."
             return "[처방] 대상은 의사가 아닙니다."
+
+        if actor.role == Role.GANGSTER:
+            if target_id is None:
+                raise ValueError("공갈 대상을 선택해야 합니다.")
+            selected_target = self._require_alive(target_id)
+            if actor_id in self.gangster_targets:
+                raise ValueError("이미 이번 밤 행동을 선택했습니다.")
+            if actor_id == target_id:
+                raise ValueError("건달은 자기 자신을 공갈할 수 없습니다.")
+            target = self._proxy_target(selected_target)
+            self.gangster_targets[actor_id] = target.user_id
+            return f"공갈 대상: {selected_target.name}"
 
         if actor.role == Role.POLICE:
             if target_id is None:
@@ -800,6 +992,159 @@ class MafiaGame:
 
         raise ValueError(f"{actor.role.value}은/는 밤 행동이 없습니다.")
 
+    def _submit_stolen_night_action(self, actor: Player, target_id: int | None) -> str:
+        actor_id = actor.user_id
+        stolen_role = self.thief_night_role(actor)
+        if stolen_role is None:
+            raise ValueError("오늘 밤 사용할 수 있는 도벽 능력이 없습니다.")
+
+        prefix = f"[도벽: {stolen_role.value}] "
+        if stolen_role == Role.MAFIA:
+            if target_id is None:
+                raise ValueError("공격 대상을 선택해야 합니다.")
+            selected_target = self._require_alive(target_id)
+            previous_target_id = self.mafia_display_targets.get(actor_id)
+            target = self._proxy_target(selected_target)
+            self.mafia_targets[actor_id] = target.user_id
+            self.mafia_display_targets[actor_id] = selected_target.user_id
+            if previous_target_id and previous_target_id != selected_target.user_id:
+                return prefix + f"공격 대상 변경: {selected_target.name}"
+            return prefix + f"공격 대상: {selected_target.name}"
+
+        if stolen_role == Role.DOCTOR:
+            if target_id is None:
+                raise ValueError("보호 대상을 선택해야 합니다.")
+            selected_target = self._require_alive(target_id)
+            if actor_id in self.doctor_targets:
+                raise ValueError("이미 이번 밤 행동을 선택했습니다.")
+            self.doctor_targets[actor_id] = self._proxy_target(selected_target).user_id
+            return prefix + f"보호 대상: {selected_target.name}"
+
+        if stolen_role == Role.POLICE:
+            if target_id is None:
+                raise ValueError("조사 대상을 선택해야 합니다.")
+            selected_target = self._require_alive(target_id)
+            if actor_id in self.police_targets:
+                raise ValueError("이미 이번 밤 행동을 선택했습니다.")
+            if actor_id == target_id:
+                raise ValueError("자기 자신은 조사할 수 없습니다.")
+            self.police_targets[actor_id] = self._proxy_target(selected_target).user_id
+            return prefix + f"조사 대상: {selected_target.name}"
+
+        if stolen_role == Role.REPORTER:
+            if self.day_number < 2:
+                raise ValueError("엠바고로 첫 번째 밤에는 기사를 낼 수 없습니다.")
+            if actor_id in self.reporter_targets or actor_id in self.reporter_skip_submitted:
+                raise ValueError("이미 이번 밤 행동을 선택했습니다.")
+            if target_id is None:
+                self.reporter_skip_submitted.add(actor_id)
+                return prefix + "이번 밤에는 특종을 사용하지 않습니다."
+            selected_target = self._require_alive(target_id)
+            if actor_id == target_id:
+                raise ValueError("자기 자신은 취재할 수 없습니다.")
+            self.reporter_targets[actor_id] = self._proxy_target(selected_target).user_id
+            self.reporter_used_ids.add(actor_id)
+            return prefix + f"특종 대상: {selected_target.name}"
+
+        if stolen_role == Role.DETECTIVE:
+            if target_id is None:
+                raise ValueError("추적 대상을 선택해야 합니다.")
+            selected_target = self._require_alive(target_id)
+            if actor_id in self.detective_targets:
+                raise ValueError("이미 이번 밤 행동을 선택했습니다.")
+            if actor_id == target_id:
+                raise ValueError("자기 자신은 추적할 수 없습니다.")
+            self.detective_targets[actor_id] = self._proxy_target(selected_target).user_id
+            return prefix + f"추적 대상: {selected_target.name}"
+
+        if stolen_role == Role.SPY:
+            if target_id is None:
+                raise ValueError("첩보 대상을 선택해야 합니다.")
+            selected_target = self._require_alive(target_id)
+            if self.spy_targets.get(actor_id):
+                raise ValueError("이미 이번 밤 행동을 선택했습니다.")
+            if actor_id == target_id:
+                raise ValueError("자기 자신은 첩보할 수 없습니다.")
+            target = self._proxy_target(selected_target)
+            self.spy_targets.setdefault(actor_id, []).append(target.user_id)
+            return prefix + f"첩보 대상: {selected_target.name}"
+
+        if stolen_role == Role.SHAMAN:
+            if target_id is None:
+                raise ValueError("성불 대상을 선택해야 합니다.")
+            target = self._require_player(target_id)
+            if actor_id in self.shaman_targets:
+                raise ValueError("이미 이번 밤 행동을 선택했습니다.")
+            if target.alive:
+                raise ValueError("성불은 사망자에게만 사용할 수 있습니다.")
+            if target.user_id in self.purified_dead_ids:
+                raise ValueError("이미 성불된 사망자입니다.")
+            self.shaman_targets[actor_id] = target_id
+            return prefix + f"성불 대상: {target.name}"
+
+        if stolen_role == Role.PRIEST:
+            if target_id is None:
+                raise ValueError("소생 대상을 선택해야 합니다.")
+            target = self._require_player(target_id)
+            if actor_id in self.priest_targets:
+                raise ValueError("이미 이번 밤 행동을 선택했습니다.")
+            if actor_id in self.priest_used_ids:
+                raise ValueError("소생은 이미 사용했습니다.")
+            if target.alive:
+                raise ValueError("소생은 사망자에게만 사용할 수 있습니다.")
+            if target.user_id in self.purified_dead_ids:
+                raise ValueError("성불 상태 사망자는 소생할 수 없습니다.")
+            self.priest_targets[actor_id] = target_id
+            self.priest_used_ids.add(actor_id)
+            return prefix + f"소생 대상: {target.name}"
+
+        if stolen_role == Role.WITCH:
+            if target_id is None:
+                raise ValueError("저주 대상을 선택해야 합니다.")
+            selected_target = self._require_alive(target_id)
+            if actor_id in self.witch_targets:
+                raise ValueError("이미 이번 밤 행동을 선택했습니다.")
+            if actor_id == target_id:
+                raise ValueError("자기 자신은 저주할 수 없습니다.")
+            self.witch_targets[actor_id] = self._proxy_target(selected_target).user_id
+            return prefix + f"저주 대상: {selected_target.name}"
+
+        if stolen_role == Role.GODFATHER:
+            if target_id is None:
+                raise ValueError("확정 처치 대상을 선택해야 합니다.")
+            selected_target = self._require_alive(target_id)
+            if actor_id in self.godfather_targets:
+                raise ValueError("이미 이번 밤 행동을 선택했습니다.")
+            if actor_id == target_id:
+                raise ValueError("자기 자신은 지목할 수 없습니다.")
+            self.godfather_targets[actor_id] = self._proxy_target(selected_target).user_id
+            return prefix + f"확정 처치 대상: {selected_target.name}"
+
+        if stolen_role == Role.TERRORIST:
+            if target_id is None:
+                raise ValueError("지목 대상을 선택해야 합니다.")
+            selected_target = self._require_alive(target_id)
+            if actor_id in self.terrorist_action_submitted:
+                raise ValueError("이미 이번 밤 행동을 선택했습니다.")
+            if actor_id == target_id:
+                raise ValueError("자기 자신은 지목할 수 없습니다.")
+            self.terrorist_targets[actor_id] = self._proxy_target(selected_target).user_id
+            self.terrorist_action_submitted.add(actor_id)
+            return prefix + f"지목 대상: {selected_target.name}"
+
+        if stolen_role == Role.GANGSTER:
+            if target_id is None:
+                raise ValueError("공갈 대상을 선택해야 합니다.")
+            selected_target = self._require_alive(target_id)
+            if actor_id in self.gangster_targets:
+                raise ValueError("이미 이번 밤 행동을 선택했습니다.")
+            if actor_id == target_id:
+                raise ValueError("자기 자신은 공갈할 수 없습니다.")
+            self.gangster_targets[actor_id] = self._proxy_target(selected_target).user_id
+            return prefix + f"공갈 대상: {selected_target.name}"
+
+        raise ValueError("훔친 직업은 이번 밤에 사용할 수 있는 능력이 없습니다.")
+
     def submit_contractor_contract(
         self,
         actor_id: int,
@@ -935,6 +1280,7 @@ class MafiaGame:
         self.mafia_targets.pop(actor_id, None)
         self.mafia_display_targets.pop(actor_id, None)
         self.doctor_targets.pop(actor_id, None)
+        self.gangster_targets.pop(actor_id, None)
         self.police_targets.pop(actor_id, None)
         self.vigilante_targets.pop(actor_id, None)
         self.detective_targets.pop(actor_id, None)
@@ -983,7 +1329,7 @@ class MafiaGame:
         godfather_attackers = {
             actor_id: target_id
             for actor_id, target_id in self.godfather_targets.items()
-            if actor_id in self.godfather_contacted
+            if actor_id in self.godfather_contacted or self._is_stolen_godfather_actor(actor_id)
         }
         mafia_target_id = self._majority_target(
             self.mafia_targets,
@@ -1014,6 +1360,7 @@ class MafiaGame:
         shaman_results, shaman_purifications = self._resolve_shaman_results()
         vigilante_results, vigilante_kills = self._resolve_vigilante_results()
         nurse_results, nurse_contacts = self._resolve_nurse_results()
+        gangster_results = self._resolve_gangster_results()
         cult_results, cult_bells = self._resolve_cult_results()
         fanatic_results, fanatic_bells = self._resolve_fanatic_results()
         fanatic_inherits = self.ensure_fanatic_reincarnation()
@@ -1097,6 +1444,7 @@ class MafiaGame:
         self.nurse_targets.clear()
         self.nurse_prescription_targets.clear()
         self.nurse_contacts_this_night.clear()
+        self.gangster_targets.clear()
         self.police_targets.clear()
         self.vigilante_targets.clear()
         self.reporter_targets.clear()
@@ -1116,6 +1464,7 @@ class MafiaGame:
         self.terrorist_action_submitted.clear()
         self.cult_targets.clear()
         self.fanatic_targets.clear()
+        self.thief_stolen_roles.clear()
         self.cult_bells_this_night = 0
         self.day_votes.clear()
         self.confirm_votes.clear()
@@ -1153,6 +1502,7 @@ class MafiaGame:
             vigilante_kills=vigilante_kills,
             nurse_results=nurse_results,
             nurse_contacts=nurse_contacts,
+            gangster_results=gangster_results,
             cult_results=cult_results,
             fanatic_results=fanatic_results,
             fanatic_inherits=fanatic_inherits,
@@ -1174,6 +1524,8 @@ class MafiaGame:
             self.spy_contacted.add(player.user_id)
         elif player.role == Role.CONTRACTOR:
             self.contractor_contacted.add(player.user_id)
+        elif player.role == Role.THIEF:
+            self.thief_contacted.add(player.user_id)
         elif player.role == Role.WITCH:
             self.witch_contacted.add(player.user_id)
         elif player.role == Role.SCIENTIST:
@@ -1219,6 +1571,9 @@ class MafiaGame:
         if self.phase != Phase.VOTE:
             raise ValueError("지금은 투표 시간이 아닙니다.")
         voter = self._require_alive(voter_id)
+        if self._vote_blocked(voter.user_id):
+            self.day_votes[voter.user_id] = None
+            return "공갈당해 이번 지목 투표권이 없습니다."
         if target_id is None:
             self.day_votes[voter.user_id] = None
             return "투표 대상: 스킵"
@@ -1234,12 +1589,23 @@ class MafiaGame:
         live_votes = {
             voter_id: target_id
             for voter_id, target_id in self.day_votes.items()
-            if self._is_alive(voter_id) and (target_id is None or self._is_alive(target_id))
+            if self._is_alive(voter_id)
+            and not self._vote_blocked(voter_id)
+            and (target_id is None or self._is_alive(target_id))
         }
+        blocked_voters = [
+            player for player in self.alive_players() if self._vote_blocked(player.user_id)
+        ]
         madam_seduced = self._apply_madam_seduction(live_votes)
         if not live_votes:
             self._advance_to_next_night()
-            return VoteResult(executed=None, tied=False, skipped=False, madam_seduced=madam_seduced)
+            return VoteResult(
+                executed=None,
+                tied=False,
+                skipped=False,
+                madam_seduced=madam_seduced,
+                blocked_voters=blocked_voters,
+            )
 
         counts: Counter[int | None] = Counter()
         for voter_id, target_id in live_votes.items():
@@ -1255,6 +1621,7 @@ class MafiaGame:
                 skipped=False,
                 vote_counts=vote_counts,
                 madam_seduced=madam_seduced,
+                blocked_voters=blocked_voters,
             )
 
         if top_targets[0] is None:
@@ -1265,6 +1632,7 @@ class MafiaGame:
                 skipped=True,
                 vote_counts=vote_counts,
                 madam_seduced=madam_seduced,
+                blocked_voters=blocked_voters,
             )
 
         nominated = self.get_player(top_targets[0])
@@ -1275,6 +1643,7 @@ class MafiaGame:
             skipped=False,
             vote_counts=vote_counts,
             madam_seduced=madam_seduced,
+            blocked_voters=blocked_voters,
         )
 
     def resolve_vote(self) -> VoteResult:
@@ -1358,6 +1727,9 @@ class MafiaGame:
     def winner(self) -> Winner | None:
         if self.joker_won:
             return Winner.JOKER
+        prophet_winner = self._prophet_winner()
+        if prophet_winner:
+            return prophet_winner
         mafia_alive = len(self.alive_known_mafia_team())
         cult_alive = len(self.alive_cult_team())
         non_cult_alive = len(self.alive_players()) - cult_alive
@@ -1380,6 +1752,23 @@ class MafiaGame:
                 return None
             return Winner.MAFIA
         return None
+
+    def _prophet_winner(self) -> Winner | None:
+        if self.phase != Phase.DAY or self.day_number < 4:
+            return None
+        prophets = [
+            player
+            for player in self.alive_players()
+            if player.role == Role.PROPHET
+        ]
+        if not prophets:
+            return None
+        prophet = sorted(prophets, key=lambda item: item.name.casefold())[0]
+        if self.is_cult_team(prophet):
+            return Winner.CULT
+        if self.is_mafia_team(prophet):
+            return Winner.MAFIA
+        return Winner.CITIZEN
 
     def _active_judge(self) -> Player | None:
         judges = [
@@ -1459,6 +1848,10 @@ class MafiaGame:
             return self.doctor_targets.get(watched.user_id)
         if watched.role == Role.NURSE:
             return self.nurse_targets.get(watched.user_id) or self.nurse_prescription_targets.get(watched.user_id)
+        if watched.role == Role.GANGSTER:
+            return self.gangster_targets.get(watched.user_id)
+        if watched.role == Role.THIEF:
+            return self._resolved_thief_action_target(watched)
         if watched.role == Role.POLICE:
             return police_target_id if watched.user_id in self.police_targets else None
         if watched.role == Role.VIGILANTE:
@@ -1489,6 +1882,35 @@ class MafiaGame:
             return self.cult_targets.get(watched.user_id)
         if watched.role == Role.FANATIC:
             return self.fanatic_targets.get(watched.user_id)
+        return None
+
+    def _resolved_thief_action_target(self, watched: Player) -> int | None:
+        role = self.thief_night_role(watched)
+        if role == Role.MAFIA:
+            return self.mafia_targets.get(watched.user_id)
+        if role == Role.DOCTOR:
+            return self.doctor_targets.get(watched.user_id)
+        if role == Role.POLICE:
+            return self.police_targets.get(watched.user_id)
+        if role == Role.REPORTER:
+            return self.reporter_targets.get(watched.user_id)
+        if role == Role.DETECTIVE:
+            return self.detective_targets.get(watched.user_id)
+        if role == Role.SPY:
+            targets = self.spy_targets.get(watched.user_id, [])
+            return targets[-1] if targets else None
+        if role == Role.SHAMAN:
+            return self.shaman_targets.get(watched.user_id)
+        if role == Role.PRIEST:
+            return self.priest_targets.get(watched.user_id)
+        if role == Role.WITCH:
+            return self.witch_targets.get(watched.user_id)
+        if role == Role.GODFATHER:
+            return self.godfather_targets.get(watched.user_id)
+        if role == Role.TERRORIST:
+            return self.terrorist_targets.get(watched.user_id)
+        if role == Role.GANGSTER:
+            return self.gangster_targets.get(watched.user_id)
         return None
 
     def _resolve_terrorist_night_retaliations(
@@ -1663,6 +2085,19 @@ class MafiaGame:
                 results[actor_id] = f"[치료] {target.name} 님을 치료 대상으로 선택했습니다."
         return results, list(self.nurse_contacts_this_night)
 
+    def _resolve_gangster_results(self) -> dict[int, str]:
+        results: dict[int, str] = {}
+        for actor_id, target_id in self.gangster_targets.items():
+            actor = self.get_player(actor_id)
+            target = self.get_player(target_id)
+            if not actor or not actor.alive or not target or not target.alive:
+                continue
+            self.gangster_blocked_vote_days[target.user_id] = self.day_number
+            results[actor_id] = (
+                f"[공갈] {target.name} 님의 다음 낮 지목 투표권을 빼앗았습니다."
+            )
+        return results
+
     def _nurse_enhanced_heal_active(self) -> bool:
         return any(
             player.alive and player.role == Role.NURSE and player.user_id in self.nurse_contacted
@@ -1822,6 +2257,10 @@ class MafiaGame:
         player = self.get_player(user_id)
         return bool(player and player.alive)
 
+    def _is_stolen_godfather_actor(self, user_id: int) -> bool:
+        player = self.get_player(user_id)
+        return bool(player and player.role == Role.THIEF and self.thief_stolen_roles.get(user_id) == Role.GODFATHER)
+
     def _majority_target(self, targets: dict[int, int]) -> int | None:
         live_targets = [
             target_id
@@ -1857,15 +2296,26 @@ class MafiaGame:
         )
 
     def _vote_weight(self, voter_id: int) -> int:
+        if self._vote_blocked(voter_id):
+            return 0
         voter = self.get_player(voter_id)
         if voter and voter.alive and voter.role == Role.POLITICIAN:
             return 2
         return 1
 
+    def _vote_blocked(self, voter_id: int) -> bool:
+        return self.gangster_blocked_vote_days.get(voter_id) == self.day_number
+
     def _advance_to_next_night(self) -> None:
         self._expire_madam_seductions()
+        self._expire_vote_blocks()
         self.phase = Phase.NIGHT
         self.day_number += 1
+
+    def _expire_vote_blocks(self) -> None:
+        for user_id, day_number in list(self.gangster_blocked_vote_days.items()):
+            if day_number <= self.day_number:
+                self.gangster_blocked_vote_days.pop(user_id, None)
 
     def _expire_madam_seductions(self) -> None:
         for user_id, release_day in list(self.madam_seduction_release_days.items()):

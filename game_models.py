@@ -17,8 +17,12 @@ class Role(str, Enum):
     SHAMAN = "영매"
     PRIEST = "성직자"
     SOLDIER = "군인"
+    GANGSTER = "건달"
+    PROPHET = "예언자"
+    PSYCHOLOGIST = "심리학자"
     SPY = "스파이"
     CONTRACTOR = "청부업자"
+    THIEF = "도둑"
     WITCH = "마녀"
     SCIENTIST = "과학자"
     MADAM = "마담"
@@ -56,6 +60,7 @@ MAFIA_TEAM_ROLES = {
     Role.MAFIA,
     Role.SPY,
     Role.CONTRACTOR,
+    Role.THIEF,
     Role.WITCH,
     Role.SCIENTIST,
     Role.MADAM,
@@ -78,6 +83,10 @@ CONTRACTOR_GUESSABLE_ROLES = {
     Role.LOVER,
     Role.SOLDIER,
     Role.NURSE,
+    Role.GANGSTER,
+    Role.PROPHET,
+    Role.PSYCHOLOGIST,
+    Role.THIEF,
     Role.CULT_LEADER,
     Role.FANATIC,
     Role.WITCH,
@@ -132,6 +141,7 @@ class NightResult:
     cult_results: dict[int, str] = field(default_factory=dict)
     fanatic_results: dict[int, str] = field(default_factory=dict)
     fanatic_inherits: list[int] = field(default_factory=list)
+    gangster_results: dict[int, str] = field(default_factory=dict)
     cult_bells: int = 0
 
 
@@ -142,6 +152,7 @@ class VoteResult:
     skipped: bool = False
     vote_counts: dict[int | None, int] = field(default_factory=dict)
     madam_seduced: list[Player] = field(default_factory=list)
+    blocked_voters: list[Player] = field(default_factory=list)
 
 
 @dataclass

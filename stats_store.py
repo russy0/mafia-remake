@@ -436,6 +436,45 @@ def personal_stats_text(user_id: int, fallback_name: str) -> str:
     )
 
 
+def rating_log_text(user_id: int, fallback_name: str, limit: int = 10) -> str:
+    stats = load_stats()
+    entry = stats.get("users", {}).get(str(user_id))
+    if not isinstance(entry, dict):
+        return "아직 기록된 레이팅 로그가 없습니다."
+    history = entry.get("rating_history", [])
+    if not isinstance(history, list) or not history:
+        return "아직 기록된 레이팅 로그가 없습니다."
+
+    name = str(entry.get("name") or fallback_name)
+    lines = [f"{name} 님의 최근 레이팅 로그"]
+    for item in reversed(history[-limit:]):
+        if not isinstance(item, dict):
+            continue
+        ended_at = str(item.get("ended_at", ""))
+        try:
+            ended_text = datetime.fromisoformat(ended_at).strftime("%m/%d %H:%M")
+        except ValueError:
+            ended_text = ended_at or "날짜 없음"
+        before = int(item.get("before", INITIAL_RATING))
+        after = int(item.get("after", before))
+        delta = int(item.get("delta", after - before))
+        team_delta = int(item.get("team_delta", 0))
+        role_delta = int(item.get("role_delta", 0))
+        sign = "+" if delta >= 0 else ""
+        role = str(item.get("role", "직업 없음"))
+        winner = str(item.get("winner", "승자 없음"))
+        reasons = item.get("rating_reasons", [])
+        reason_text = ", ".join(str(reason) for reason in reasons[:3]) if isinstance(reasons, list) else ""
+        detail = f" / 팀 {team_delta:+d}, 직업 {role_delta:+d}"
+        if reason_text:
+            detail += f" / {reason_text}"
+        lines.append(
+            f"- {ended_text}: {before} -> {after} ({sign}{delta})"
+            f" / {role} / 승자 {winner}{detail}"
+        )
+    return "\n".join(lines)
+
+
 def leaderboard_value(entry: dict, metric: str) -> float:
     games = int(entry.get("games", 0))
     wins = int(entry.get("wins", 0))

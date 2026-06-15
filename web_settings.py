@@ -139,6 +139,10 @@ EDITABLE_FIELDS: tuple[ConfigField, ...] = (
     ConfigField("enable_priest", "성직자 활성화", "bool"),
     ConfigField("enable_soldier", "군인 활성화", "bool"),
     ConfigField("enable_nurse", "간호사 활성화", "bool"),
+    ConfigField("enable_gangster", "건달 활성화", "bool"),
+    ConfigField("enable_prophet", "예언자 활성화", "bool"),
+    ConfigField("enable_psychologist", "심리학자 활성화", "bool"),
+    ConfigField("enable_thief", "도둑 활성화", "bool"),
     ConfigField("enable_cult_team", "교주/광신도 팀 활성화", "bool"),
 )
 
