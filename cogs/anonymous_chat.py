@@ -686,6 +686,38 @@ async def handle_anonymous_message(
     if not player:
         return True
 
+    if not dead_chat and running.game.is_madam_seduced(player):
+        await delete_message_quietly(message)
+        if shaman_chat:
+            await set_anonymous_shaman_input_access(
+                message.guild,
+                running,
+                player,
+                can_view=True,
+                can_chat=False,
+                reason="마피아 게임 마담 유혹으로 영매 채팅 권한 차단",
+            )
+        elif role is None:
+            await set_anonymous_general_input_access(
+                message.guild,
+                running,
+                player,
+                can_chat=False,
+                reason="마피아 게임 마담 유혹으로 채팅 권한 차단",
+            )
+        else:
+            member = await get_guild_member(message.guild, player.user_id)
+            if member and isinstance(message.channel, discord.TextChannel):
+                with suppress(discord.DiscordException):
+                    await set_permissions_if_changed(
+                        message.channel,
+                        member,
+                        overwrite=anonymous_input_overwrite(True, False),
+                        reason="마피아 게임 마담 유혹으로 역할 채팅 권한 차단",
+                        running=running,
+                    )
+        return True
+
     body = anonymous_message_body(message)
 
     if dead_chat:
@@ -786,6 +818,15 @@ async def on_message(message: discord.Message) -> None:
             return
 
         if message.guild and not running.anonymous_enabled:
+            player = running.game.get_player(message.author.id)
+            if player and running.game.is_madam_seduced(player) and message.channel.id == running.channel_id:
+                await delete_message_quietly(message)
+                await sync_madam_seduction_permissions(
+                    message.guild,
+                    running,
+                    reason="마피아 게임 마담 유혹 채팅 차단 재동기화",
+                )
+                return
             role = next(
                 (
                     channel_role
@@ -795,14 +836,42 @@ async def on_message(message: discord.Message) -> None:
                 None,
             )
             if role is not None:
-                player = running.game.get_player(message.author.id)
-                if player:
+                if player and running.game.is_madam_seduced(player):
+                    await delete_message_quietly(message)
+                    await set_player_private_channel_access(
+                        message.guild,
+                        running,
+                        role,
+                        player,
+                        can_chat=False,
+                        reason="마피아 게임 마담 유혹으로 역할 채팅 권한 차단",
+                    )
+                elif player:
                     await mirror_role_chat_to_dead(message.guild, running, message.author, role, anonymous_message_body(message))
+                return
+
+            if (
+                player
+                and running.game.is_madam_seduced(player)
+                and message.channel.id == running.shaman_channel_id
+            ):
+                await delete_message_quietly(message)
+                await set_shaman_channel_member_access(
+                    message.guild,
+                    running,
+                    player,
+                    can_view=True,
+                    can_chat=False,
+                    reason="마피아 게임 마담 유혹으로 영매 채팅 권한 차단",
+                )
                 return
 
         if message.channel.id != running.frog_channel_id:
             continue
         player = running.game.get_player(message.author.id)
+        if player and running.game.is_madam_seduced(player):
+            await delete_message_quietly(message)
+            return
         if not player or not running.game.is_frog(player):
             await delete_message_quietly(message)
             return

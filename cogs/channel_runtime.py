@@ -568,7 +568,8 @@ async def sync_madam_seduction_permissions(
     channel = guild.get_channel(running.channel_id)
     for player in running.game.alive_players():
         if running.game.is_madam_seduced(player):
-            for role in PRIVATE_CHAT_ROLES:
+            roles_to_block = set(PRIVATE_CHAT_ROLES) | set(running.private_channel_ids)
+            for role in roles_to_block:
                 await set_player_private_channel_access(
                     guild,
                     running,
@@ -577,8 +578,26 @@ async def sync_madam_seduction_permissions(
                     can_chat=False,
                     reason=reason,
                 )
+            if player.role == Role.SHAMAN:
+                await set_shaman_channel_member_access(
+                    guild,
+                    running,
+                    player,
+                    can_view=True,
+                    can_chat=False,
+                    reason=reason,
+                )
         else:
             await refresh_player_private_channel_access(guild, running, player)
+            if player.role == Role.SHAMAN:
+                await set_shaman_channel_member_access(
+                    guild,
+                    running,
+                    player,
+                    can_view=True,
+                    can_chat=running.game.phase == Phase.NIGHT and not running.game.is_frog(player),
+                    reason=reason,
+                )
 
     if running.anonymous_enabled:
         for player in running.game.alive_players():
@@ -587,6 +606,27 @@ async def sync_madam_seduction_permissions(
                 running,
                 player,
                 can_chat=can_use_anonymous_general_chat(running, player),
+                reason=reason,
+            )
+            if player.role == Role.SHAMAN:
+                await set_anonymous_shaman_input_access(
+                    guild,
+                    running,
+                    player,
+                    can_view=True,
+                    can_chat=can_use_anonymous_shaman_chat(running, player),
+                    reason=reason,
+                )
+        for (user_id, role), _channel_id in list(running.anonymous_role_input_channel_ids.items()):
+            player = running.game.get_player(user_id)
+            if not player or not player.alive:
+                continue
+            await set_anonymous_role_access(
+                guild,
+                running,
+                role,
+                player,
+                can_access=can_use_anonymous_role_chat(running, player, role),
                 reason=reason,
             )
         return
