@@ -267,13 +267,24 @@ const WEB_PAGE_STYLE: &str = r#"
   .nav { display: flex; flex-wrap: wrap; gap: 10px; margin: 14px 0 20px; }
   .nav a { text-decoration: none; padding: 8px 12px; border: 1px solid #8884; border-radius: 8px; }
   .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 12px; margin: 16px 0; }
+  .split { display: grid; grid-template-columns: 1.1fr 0.9fr; gap: 16px; }
   .card { border: 1px solid #8884; border-radius: 8px; padding: 14px; background: #8881; }
   .card strong { display: block; font-size: 1.4rem; margin-top: 4px; }
   .panel { border: 1px solid #8884; border-radius: 8px; padding: 16px; margin: 16px 0; }
   .pill { display: inline-block; padding: 3px 9px; border: 1px solid #8884; border-radius: 999px; }
+  .metric-tabs { display: flex; flex-wrap: wrap; gap: 8px; margin: 12px 0 18px; }
+  .metric-tabs a { text-decoration: none; border: 1px solid #8884; border-radius: 999px; padding: 7px 12px; }
+  .metric-tabs a.active { background: #5865F2; color: white; border-color: #5865F2; }
+  .podium { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 12px; margin-bottom: 16px; }
+  .podium-card { border: 1px solid #8884; border-radius: 8px; padding: 14px; background: #8881; }
+  .podium-card .rank { font-size: 0.9rem; color: #888; }
+  .podium-card .name { font-size: 1.15rem; font-weight: 800; margin: 6px 0; }
+  .podium-card .rating { font-size: 1.45rem; font-weight: 800; }
+  .endpoint { display: grid; grid-template-columns: minmax(210px, 0.7fr) 1fr; gap: 10px; padding: 10px 0; border-bottom: 1px solid #8883; }
   code { background: #8882; padding: 2px 6px; border-radius: 6px; }
   table { width: 100%; border-collapse: collapse; }
   th, td { padding: 8px 6px; border-bottom: 1px solid #8883; text-align: left; }
+  td.num, th.num { text-align: right; }
   fieldset { border: 1px solid #8884; border-radius: 10px; padding: 8px 16px; margin-bottom: 16px; }
   legend { padding: 0 6px; font-weight: 600; }
   .row { display: flex; align-items: center; justify-content: space-between;
@@ -289,6 +300,11 @@ const WEB_PAGE_STYLE: &str = r#"
   button:hover { background: #4752c4; }
   .message { padding: 12px 16px; border-radius: 8px; margin-bottom: 16px; }
   .message.error { background: #f8d7da; color: #842029; }
+  @media (max-width: 760px) {
+    .split { grid-template-columns: 1fr; }
+    .endpoint { grid-template-columns: 1fr; }
+    table { font-size: 0.92rem; }
+  }
 </style>
 "#;
 
@@ -842,7 +858,7 @@ fn render_home_page(status: &Value, leaderboard: &Value, stats_summary: &Value) 
     );
     let body = format!(
         "{body}<section class=\"panel\"><h2>레이팅 TOP 3</h2>{}</section>",
-        render_leaderboard_table(leaderboard, true)
+        render_leaderboard_podium(leaderboard)
     );
     base_html("마피아 봇 홈", &body, true)
 }
@@ -901,10 +917,70 @@ fn render_stats_cards(stats_summary: &Value) -> String {
     )
 }
 
+fn render_metric_tabs(leaderboard: &Value) -> String {
+    let current = leaderboard
+        .get("metric")
+        .and_then(Value::as_str)
+        .unwrap_or("rating");
+    let Some(metrics) = leaderboard.get("metrics").and_then(Value::as_array) else {
+        return String::new();
+    };
+    let links = metrics
+        .iter()
+        .filter_map(|metric| {
+            let key = metric.get("key").and_then(Value::as_str)?;
+            let name = metric.get("name").and_then(Value::as_str).unwrap_or(key);
+            let class_attr = if key == current {
+                r#" class="active""#
+            } else {
+                ""
+            };
+            Some(format!(
+                r#"<a href="/leaderboard?metric={}"{}>{}</a>"#,
+                html_escape(key),
+                class_attr,
+                html_escape(name)
+            ))
+        })
+        .collect::<Vec<_>>()
+        .join("");
+    format!(r#"<div class="metric-tabs">{links}</div>"#)
+}
+
+fn render_leaderboard_podium(leaderboard: &Value) -> String {
+    let entries = leaderboard
+        .get("entries")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    if entries.is_empty() {
+        return r#"<p class="meta">아직 기록된 게임 전적이 없습니다.</p>"#.to_string();
+    }
+    let cards = entries
+        .iter()
+        .take(3)
+        .map(|entry| {
+            format!(
+                r#"<div class="podium-card"><div class="rank">#{}</div><div class="name">{}</div><div class="rating">{}점</div><div class="meta">{}승 {}패 · 승률 {}</div></div>"#,
+                safe_text(entry.get("rank")),
+                safe_text(entry.get("name")),
+                safe_text(entry.get("rating")),
+                safe_text(entry.get("wins")),
+                safe_text(entry.get("losses")),
+                safe_text(entry.get("winrate_text")),
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("");
+    format!(r#"<div class="podium">{cards}</div>"#)
+}
+
 fn render_leaderboard_page(leaderboard: &Value, stats_summary: &Value) -> String {
     let body = format!(
-        r#"<p class="meta">현재 기준: <span class="pill">{}</span></p>{}{}"#,
+        r#"<p class="meta">현재 기준: <span class="pill">{}</span></p>{}{}{}{}"#,
         safe_text(leaderboard.get("metric_name")),
+        render_metric_tabs(leaderboard),
+        render_leaderboard_podium(leaderboard),
         render_leaderboard_table(leaderboard, false),
         render_stats_cards(stats_summary),
     );
@@ -924,7 +1000,7 @@ fn render_leaderboard_table(leaderboard: &Value, compact: bool) -> String {
         .iter()
         .map(|entry| {
             format!(
-                "<tr><td>{}</td><td>{}</td><td>{}</td><td>{}승 {}패</td><td>{}</td><td>{}</td><td>{}</td></tr>",
+                r#"<tr><td class="num">{}</td><td>{}</td><td class="num">{}</td><td>{}승 {}패</td><td class="num">{}</td><td class="num">{}</td><td class="num">{}</td><td>{}</td></tr>"#,
                 safe_text(entry.get("rank")),
                 safe_text(entry.get("name")),
                 safe_text(entry.get("rating")),
@@ -932,6 +1008,7 @@ fn render_leaderboard_table(leaderboard: &Value, compact: bool) -> String {
                 safe_text(entry.get("losses")),
                 safe_text(entry.get("winrate_text")),
                 safe_text(entry.get("games")),
+                safe_text(entry.get("mafia_team_games")),
                 safe_text(entry.get("playtime")),
             )
         })
@@ -943,21 +1020,47 @@ fn render_leaderboard_table(leaderboard: &Value, compact: bool) -> String {
         "<h2>전체 순위</h2>"
     };
     format!(
-        r#"<section class="panel">{title}<table><thead><tr><th>순위</th><th>이름</th><th>레이팅</th><th>승패</th><th>승률</th><th>판수</th><th>게임시간</th></tr></thead><tbody>{rows}</tbody></table></section>"#
+        r#"<section class="panel">{title}<table><thead><tr><th class="num">순위</th><th>이름</th><th class="num">레이팅</th><th>승패</th><th class="num">승률</th><th class="num">판수</th><th class="num">마피아팀</th><th>게임시간</th></tr></thead><tbody>{rows}</tbody></table></section>"#
     )
 }
 
 fn render_api_docs_page() -> String {
-    let body = r#"<p class="meta">웹 상태판에서 사용하는 공개 API입니다. 모든 응답은 JSON입니다.</p>
-<section class="panel"><h2>엔드포인트</h2>
-<p><code>GET /health</code> 봇 웹 서버 생존 확인</p>
-<p><code>GET /api/status</code> 봇 상태, 진행 중 게임, 공개 설정 요약</p>
-<p><code>GET /api/games</code> 진행 중 게임 목록</p>
-<p><code>GET /api/settings</code> 공개 설정 요약</p>
-<p><code>GET /api/stats</code> 전적 요약</p>
-<p><code>GET /api/leaderboard/{metric}</code> rating, wins, winrate, games, mafia, playtime 리더보드</p>
-</section>"#;
-    base_html("마피아 봇 API 문서", body, false)
+    let endpoints = [
+        ("GET /health", "봇 웹 서버가 살아 있는지 확인합니다."),
+        (
+            "GET /api/status",
+            "봇 연결 상태, 진행 중 게임, 공개 설정 요약을 반환합니다.",
+        ),
+        ("GET /api/games", "진행 중 게임 목록만 반환합니다."),
+        (
+            "GET /api/settings",
+            "공개 가능한 게임 설정 요약을 반환합니다.",
+        ),
+        ("GET /api/stats", "전적 요약 정보를 반환합니다."),
+        ("GET /api/leaderboard", "레이팅 기준 리더보드를 반환합니다."),
+        (
+            "GET /api/leaderboard/{metric}",
+            "wins, winrate, games, mafia, playtime, rating 기준 리더보드를 반환합니다.",
+        ),
+    ];
+    let rows = endpoints
+        .into_iter()
+        .map(|(path, desc)| {
+            format!(
+                r#"<div class="endpoint"><code>{}</code><span>{}</span></div>"#,
+                html_escape(path),
+                html_escape(desc)
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("");
+    let body = format!(
+        r#"<p class="meta">웹 상태판에서 사용하는 공개 API입니다. 모든 응답은 JSON입니다.</p>
+<section class="panel"><h2>엔드포인트</h2>{rows}</section>
+<section class="panel"><h2>예시</h2><pre>GET /api/leaderboard/rating?limit=20
+GET /api/status</pre></section>"#
+    );
+    base_html("마피아 봇 API 문서", &body, false)
 }
 
 fn render_field(field: WebConfigField, config: &BotConfig) -> String {
