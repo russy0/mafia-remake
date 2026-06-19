@@ -212,6 +212,18 @@ async fn event_handler(
     Ok(())
 }
 
+async fn upsert_global_commands(
+    ctx: &serenity::Context,
+    commands: &[poise::Command<Data, Error>],
+) -> serenity::Result<usize> {
+    let builders = poise::builtins::create_application_commands(commands);
+    let count = builders.len();
+    for builder in builders {
+        serenity::Command::create_global_command(ctx, builder).await?;
+    }
+    Ok(count)
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     let _ = rustls::crypto::ring::default_provider().install_default();
@@ -307,9 +319,9 @@ async fn main() -> Result<()> {
         })
         .setup(move |ctx, ready, framework| {
             Box::pin(async move {
-                // Entry Point 커맨드(Activity용)가 있으면 bulk 등록이 실패하므로 에러 무시
-                if let Err(e) = poise::builtins::register_globally(ctx, &framework.options().commands).await {
-                    eprintln!("커맨드 등록 경고 (무시됨): {e}");
+                match upsert_global_commands(ctx, &framework.options().commands).await {
+                    Ok(count) => println!("Global commands registered: {count}"),
+                    Err(e) => eprintln!("Global command registration warning: {e}"),
                 }
                 println!("Rust Mafia bot ready: {}", ready.user.name);
                 let data = Data {

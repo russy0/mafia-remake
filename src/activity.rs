@@ -193,7 +193,7 @@ pub fn activity_router(state: ActivityState, static_dir: Option<String>) -> Rout
         if Path::new(&dir).join("index.html").is_file() {
             router = router.fallback_service(ServeDir::new(dir));
         } else {
-            eprintln!("ACTIVITY_STATIC_DIR not found or missing index.html; using embedded Activity UI.");
+            println!("Embedded Activity UI active (ACTIVITY_STATIC_DIR unavailable).");
         }
     }
 
