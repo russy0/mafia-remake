@@ -4,12 +4,13 @@
 use crate::RunningGame;
 use anyhow::Result;
 use axum::{
+    body::Body,
     Router,
     extract::{
         Query, State,
         ws::{Message, WebSocket, WebSocketUpgrade},
     },
-    http::{HeaderMap, Method, StatusCode},
+    http::{HeaderMap, Method, StatusCode, Uri, header},
     response::{IntoResponse, Response},
     routing::{get, post},
     Json,
@@ -20,6 +21,7 @@ use poise::serenity_prelude as serenity;
 use serde::{Deserialize, Serialize};
 use std::{
     collections::HashMap,
+    path::Path,
     sync::Arc,
     time::{Duration, Instant},
 };
@@ -29,6 +31,8 @@ use tower_http::{
     services::ServeDir,
 };
 use uuid::Uuid;
+
+include!(concat!(env!("OUT_DIR"), "/activity_static.rs"));
 
 // ─────────────────────────────────────────────
 // 공유 상태
@@ -180,13 +184,59 @@ pub fn activity_router(state: ActivityState, static_dir: Option<String>) -> Rout
         .route("/ws", get(ws_handler))
         .with_state(state);
 
-    let mut router = Router::new().nest("/activity/api", api).layer(cors);
+    let mut router = Router::new()
+        .nest("/activity/api", api)
+        .fallback(embedded_activity_asset)
+        .layer(cors);
 
     if let Some(dir) = static_dir {
-        router = router.fallback_service(ServeDir::new(dir));
+        if Path::new(&dir).join("index.html").is_file() {
+            router = router.fallback_service(ServeDir::new(dir));
+        } else {
+            eprintln!("ACTIVITY_STATIC_DIR not found or missing index.html; using embedded Activity UI.");
+        }
     }
 
     router
+}
+
+async fn embedded_activity_asset(uri: Uri) -> Response {
+    let request_path = uri.path();
+    let path = match request_path {
+        "/" | "" => "/index.html",
+        path => path,
+    };
+
+    if let Some(asset) = ACTIVITY_ASSETS.iter().find(|asset| asset.path == path) {
+        return embedded_response(asset);
+    }
+
+    if request_path.starts_with("/activity/api") || request_path.starts_with("/activity/ws") {
+        return StatusCode::NOT_FOUND.into_response();
+    }
+
+    ACTIVITY_ASSETS
+        .iter()
+        .find(|asset| asset.path == "/index.html")
+        .map(embedded_response)
+        .unwrap_or_else(|| StatusCode::NOT_FOUND.into_response())
+}
+
+fn embedded_response(asset: &EmbeddedActivityAsset) -> Response {
+    Response::builder()
+        .status(StatusCode::OK)
+        .header(header::CONTENT_TYPE, asset.content_type)
+        .header(header::CACHE_CONTROL, cache_control(asset.path))
+        .body(Body::from(asset.body.to_vec()))
+        .unwrap_or_else(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response())
+}
+
+fn cache_control(path: &str) -> &'static str {
+    if path == "/index.html" {
+        "no-cache"
+    } else {
+        "public, max-age=31536000, immutable"
+    }
 }
 
 pub async fn run_activity_server(

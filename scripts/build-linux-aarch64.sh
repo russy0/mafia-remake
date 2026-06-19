@@ -2,9 +2,8 @@
 set -euo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-export CARGO_HOME="$repo_root/.cargo"
-export RUSTUP_HOME="$repo_root/.rustup"
-export PATH="$CARGO_HOME/bin:$PATH"
+source "$repo_root/scripts/common-linux.sh"
+set_mafia_build_env "$repo_root"
 
 linkage="${1:-glibc}"
 

@@ -1,25 +1,5 @@
 [build]
 jobs = 22
-rustc-wrapper = "sccache"
-
-[env]
-AR_x86_64_pc_windows_gnu = { value = ".rustup/toolchains/stable-x86_64-pc-windows-gnu/lib/rustlib/x86_64-pc-windows-gnu/bin/llvm-ar.exe", force = true, relative = true }
-
-[target.x86_64-pc-windows-gnu]
-linker = ".rustup/toolchains/stable-x86_64-pc-windows-gnu/lib/rustlib/x86_64-pc-windows-gnu/bin/rust-lld.exe"
-rustflags = [
-    "-Lnative=.mingw/lib",
-]
-
-[target.x86_64-pc-windows-gnullvm]
-linker = ".rustup/toolchains/stable-x86_64-pc-windows-gnu/lib/rustlib/x86_64-pc-windows-gnu/bin/rust-lld.exe"
-rustflags = [
-    "-Lnative=.mingw/lib",
-    "-Clink-arg=.mingw/lib/crt2.o",
-    "-Clink-arg=.mingw/lib/crtbegin.o",
-    "-Clink-arg=-lgcc_eh",
-    "-Clink-arg=.mingw/lib/crtend.o",
-]
 
 [alias]
 fast = "build"

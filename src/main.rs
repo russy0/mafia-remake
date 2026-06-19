@@ -215,11 +215,11 @@ async fn event_handler(
 #[tokio::main]
 async fn main() -> Result<()> {
     let _ = rustls::crypto::ring::default_provider().install_default();
-    dotenvy::dotenv().ok();
+    let workspace_root = embed::load_workspace_env()?;
     let token =
         std::env::var("DISCORD_TOKEN").context(".env 파일에 DISCORD_TOKEN을 설정하세요.")?;
-    let config_path = embed::workspace_path("config.json")?;
-    let stats_path = embed::workspace_path("stats.json")?;
+    let config_path = workspace_root.join("config.json");
+    let stats_path = workspace_root.join("stats.json");
     let config = config::load_config(&config_path)?;
     let stats = stats::load_stats(&stats_path).unwrap_or_default();
     let web_host = std::env::var("WEB_SETTINGS_HOST").unwrap_or_else(|_| "0.0.0.0".to_string());

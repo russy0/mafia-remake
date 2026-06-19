@@ -3,6 +3,7 @@
 config.json
 stats.json
 target/
+.sccache/
 .rustup/
 .cargo/bin/
 .cargo/registry/

@@ -1,26 +1,27 @@
 $ErrorActionPreference = "Stop"
 
 $RepoRoot = Split-Path -Parent $PSScriptRoot
-$CargoHome = Join-Path $RepoRoot ".cargo"
-$RustupHome = Join-Path $RepoRoot ".rustup"
+. (Join-Path $PSScriptRoot "common-windows.ps1")
+$BuildRoot = New-MafiaAsciiBuildRoot -RepoRoot $RepoRoot
+$BuildRepoRoot = $BuildRoot.Root
+$RustRoot = Get-MafiaWindowsRustRoot -RepoRoot $RepoRoot
+$CargoHome = Join-Path $RustRoot ".cargo"
 $Rustup = Join-Path $CargoHome "bin\rustup.exe"
 $Toolchain = "stable-x86_64-pc-windows-gnu"
 
+try {
 if (!(Test-Path $Rustup)) {
     throw "Repo-local Rust missing. Run scripts\bootstrap-windows-rust.ps1 first."
 }
 
-if (!(Test-Path (Join-Path $RepoRoot ".mingw\lib\libkernel32.a"))) {
-    throw "Repo-local MinGW libraries missing. Run scripts\bootstrap-windows-rust.ps1 first."
-}
+Set-MafiaBuildEnvironment -RepoRoot $BuildRepoRoot -RustRoot $RustRoot
 
-$env:CARGO_HOME = $CargoHome
-$env:RUSTUP_HOME = $RustupHome
-$env:Path = "$CargoHome\bin;$env:Path"
-
-Push-Location $RepoRoot
+Push-Location $BuildRepoRoot
 try {
-    & $Rustup run $Toolchain cargo test --target x86_64-pc-windows-gnullvm
+    Invoke-MafiaNative $Rustup run $Toolchain cargo test
 } finally {
     Pop-Location
+}
+} finally {
+    Remove-MafiaAsciiBuildRoot -BuildRoot $BuildRoot
 }
