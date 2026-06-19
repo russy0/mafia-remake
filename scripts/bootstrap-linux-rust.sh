@@ -34,6 +34,6 @@ rustup toolchain install "$toolchain" --profile minimal
 rustup default "$toolchain"
 rustup target add "$linux_target" --toolchain "$toolchain"
 rustup component add clippy rustfmt --toolchain "$toolchain"
-install_mafia_sccache "$toolchain"
+install_mafia_sccache "$toolchain" "$repo_root"
 rustup run "$toolchain" rustc -V
 rustup run "$toolchain" cargo -V

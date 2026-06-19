@@ -9,18 +9,47 @@ set_mafia_build_env() {
   export CARGO_BUILD_JOBS="${CARGO_BUILD_JOBS:-$(nproc 2>/dev/null || echo 1)}"
   export PATH="$CARGO_HOME/bin:$PATH"
 
-  if command -v sccache >/dev/null 2>&1; then
+  if should_use_mafia_sccache "$repo_root"; then
     export RUSTC_WRAPPER="$(command -v sccache)"
   else
     unset RUSTC_WRAPPER
-    if [ "${MAFIA_SCCACHE_WARN:-1}" = "1" ]; then
+    if is_wsl_windows_mount "$repo_root"; then
+      if [ "${MAFIA_SCCACHE_WARN:-1}" = "1" ]; then
+        echo "WSL Windows mount detected; disabling sccache to avoid /mnt/c target permission errors." >&2
+      fi
+    elif [ "${MAFIA_SCCACHE_WARN:-1}" = "1" ]; then
       echo "sccache not found; continuing without compiler cache. Run scripts/bootstrap-linux-rust.sh to install it." >&2
     fi
   fi
 }
 
+is_wsl_windows_mount() {
+  case "$1" in
+    /mnt/[a-zA-Z]/*) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+should_use_mafia_sccache() {
+  local repo_root="$1"
+
+  if [ "${MAFIA_DISABLE_SCCACHE:-0}" = "1" ]; then
+    return 1
+  fi
+  if is_wsl_windows_mount "$repo_root" && [ "${MAFIA_FORCE_SCCACHE:-0}" != "1" ]; then
+    return 1
+  fi
+  command -v sccache >/dev/null 2>&1
+}
+
 install_mafia_sccache() {
   local toolchain="$1"
+  local repo_root="${2:-$PWD}"
+
+  if ! should_use_mafia_sccache "$repo_root"; then
+    echo "Skipping sccache install/use for this filesystem. Set MAFIA_FORCE_SCCACHE=1 to override." >&2
+    return 0
+  fi
 
   if command -v sccache >/dev/null 2>&1; then
     return 0
