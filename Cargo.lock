@@ -1061,11 +1061,13 @@ dependencies = [
  "rand 0.9.4",
  "reqwest",
  "rustls 0.23.40",
+ "rustls-pemfile",
  "secrecy",
  "serde",
  "serde_json",
  "serenity",
  "tokio",
+ "tokio-rustls 0.26.4",
  "tower-http",
  "uuid",
 ]
@@ -1603,6 +1605,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ef86cd5876211988985292b91c96a8f2d298df24e75989a43a3c73f2d4d8168b"
 dependencies = [
  "aws-lc-rs",
+ "log",
  "once_cell",
  "ring",
  "rustls-pki-types",

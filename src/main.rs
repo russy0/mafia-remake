@@ -278,7 +278,21 @@ async fn main() -> Result<()> {
         .unwrap_or_else(|_| "8800".to_string())
         .parse::<u16>()
         .context("WEB_SETTINGS_PORT는 1~65535 사이 숫자여야 합니다.")?;
-    let web_base_url = web_settings::base_url(&web_host, web_port);
+    let web_settings_base_url = std::env::var("WEB_SETTINGS_BASE_URL").ok();
+    let web_base_url_https = web_settings_base_url
+        .as_deref()
+        .is_some_and(|url| url.trim_start().starts_with("https://"));
+    let explicit_web_tls_cert = std::env::var("WEB_SETTINGS_TLS_CERT").ok();
+    let explicit_web_tls_key = std::env::var("WEB_SETTINGS_TLS_KEY").ok();
+    let web_tls_cert = explicit_web_tls_cert
+        .or_else(|| web_base_url_https.then(|| std::env::var("ACTIVITY_TLS_CERT").ok()).flatten());
+    let web_tls_key = explicit_web_tls_key
+        .or_else(|| web_base_url_https.then(|| std::env::var("ACTIVITY_TLS_KEY").ok()).flatten());
+    let web_tls_enabled = web_tls_cert.is_some() && web_tls_key.is_some();
+    if web_base_url_https && !web_tls_enabled {
+        eprintln!("WEB_SETTINGS_BASE_URL uses https but web settings TLS cert/key are missing.");
+    }
+    let web_base_url = web_settings::base_url(&web_host, web_port, web_tls_enabled);
 
     // 공유 상태를 Discord 연결 전에 먼저 생성
     let games: Arc<DashMap<serenity::GuildId, Arc<RwLock<RunningGame>>>> = Arc::new(DashMap::new());
@@ -387,7 +401,7 @@ async fn main() -> Result<()> {
                 };
                 let host = web_host.clone();
                 tokio::spawn(async move {
-                    if let Err(error) = web_settings::run_server(web_state, host, web_port).await {
+                    if let Err(error) = web_settings::run_server(web_state, host, web_port, web_tls_cert, web_tls_key).await {
                         eprintln!("Rust web settings server error: {error:?}");
                     }
                 });

@@ -178,6 +178,7 @@ pub fn activity_router(state: ActivityState, static_dir: Option<String>) -> Rout
         .allow_headers(Any);
 
     let api = Router::new()
+        .route("/client-config", get(client_config_handler))
         .route("/auth", get(auth_handler))
         .route("/state", get(state_handler))
         .route("/action", post(action_handler))
@@ -193,7 +194,7 @@ pub fn activity_router(state: ActivityState, static_dir: Option<String>) -> Rout
         if Path::new(&dir).join("index.html").is_file() {
             router = router.fallback_service(ServeDir::new(dir));
         } else {
-            println!("Embedded Activity UI active (ACTIVITY_STATIC_DIR unavailable).");
+            println!("Embedded Activity UI active.");
         }
     }
 
@@ -237,6 +238,10 @@ fn cache_control(path: &str) -> &'static str {
     } else {
         "public, max-age=31536000, immutable"
     }
+}
+
+async fn client_config_handler(State(state): State<ActivityState>) -> impl IntoResponse {
+    Json(serde_json::json!({ "client_id": state.client_id }))
 }
 
 pub async fn run_activity_server(

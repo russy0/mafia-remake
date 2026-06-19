@@ -22,6 +22,6 @@ export default defineConfig({
   build: {
     outDir: "dist",
   },
-  // Discord proxy는 /.proxy/ prefix를 붙이므로 base는 /로 유지
-  base: "/",
+  // Keep assets relative so Discord URL mappings and direct HTTPS both work.
+  base: "./",
 });
