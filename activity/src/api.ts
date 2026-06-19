@@ -33,6 +33,15 @@ export async function sendAction(req: Omit<ActionRequest, "guild_id">): Promise<
   return res.json();
 }
 
+export async function sendChat(content: string): Promise<{ ok: boolean; error?: string }> {
+  const res = await fetch("/activity/api/chat", {
+    method: "POST",
+    headers: headers(),
+    body: JSON.stringify({ guild_id: guildId, content }),
+  });
+  return res.json();
+}
+
 export function createWebSocket(onMessage: (state: GameState) => void): WebSocket {
   const protocol = location.protocol === "https:" ? "wss" : "ws";
   // 브라우저는 WebSocket 업그레이드 시 커스텀 헤더를 보낼 수 없으므로 토큰을 쿼리 파라미터로 전달

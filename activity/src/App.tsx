@@ -7,6 +7,7 @@ import { PhaseTimer } from "./components/PhaseTimer";
 import { RoleCard } from "./components/RoleCard";
 import { VotePanel } from "./components/VotePanel";
 import { ActionPanel } from "./components/ActionPanel";
+import { ChatPanel } from "./components/ChatPanel";
 
 type AuthStatus = "loading" | "auth" | "ready" | "error";
 
@@ -16,6 +17,7 @@ export default function App() {
   const [guildId, setGuildId] = useState("");
   const [gameState, setGameState] = useState<GameState | null>(null);
   const [ws, setWs] = useState<WebSocket | null>(null);
+  const [myUserId, setMyUserId] = useState("");
 
   // Discord 인증
   useEffect(() => {
@@ -24,6 +26,7 @@ export default function App() {
         const auth = await authenticateWithDiscord();
         setSession(auth.sessionToken, auth.guildId);
         setGuildId(auth.guildId);
+        setMyUserId(auth.userId ?? "");
         setAuthStatus("ready");
       } catch (e) {
         setErrorMsg(e instanceof Error ? e.message : JSON.stringify(e));
@@ -126,6 +129,12 @@ export default function App() {
           highlightVotes={gameState.phase === "Vote" ? gameState.vote_targets : undefined}
         />
       </div>
+
+      {/* 채팅 */}
+      <ChatPanel
+        messages={gameState.chat_messages ?? []}
+        myUserId={myUserId}
+      />
 
       {/* 공개 상태 텍스트 */}
       <div style={{

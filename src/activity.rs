@@ -19,9 +19,9 @@ use mafia_remake::model::{Phase, Role};
 use poise::serenity_prelude as serenity;
 use serde::{Deserialize, Serialize};
 use std::{
-    collections::HashMap,
+    collections::{HashMap, VecDeque},
     sync::Arc,
-    time::{Duration, Instant},
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 use tokio::sync::RwLock;
 use tower_http::{
@@ -40,16 +40,16 @@ pub struct ActivityState {
     pub sessions: Arc<DashMap<String, ActivitySession>>,
     pub client_id: String,
     pub client_secret: String,
+    pub chat_messages: Arc<tokio::sync::RwLock<HashMap<u64, VecDeque<ChatMessageDto>>>>,
 }
 
 #[derive(Clone)]
 pub struct ActivitySession {
     pub user_id: u64,
-    #[allow(dead_code)]
     pub username: String,
-    #[allow(dead_code)]
     pub guild_id: u64,
     pub expires_at: Instant,
+    pub access_token: String,
 }
 
 impl ActivityState {
@@ -63,7 +63,24 @@ impl ActivityState {
             sessions: Arc::new(DashMap::new()),
             client_id,
             client_secret,
+            chat_messages: Arc::new(tokio::sync::RwLock::new(HashMap::new())),
         }
+    }
+
+    pub async fn push_chat(&self, guild_id: u64, msg: ChatMessageDto) {
+        let mut all = self.chat_messages.write().await;
+        let queue = all.entry(guild_id).or_insert_with(VecDeque::new);
+        queue.push_back(msg);
+        if queue.len() > 100 {
+            queue.pop_front();
+        }
+    }
+
+    pub async fn get_chat(&self, guild_id: u64) -> Vec<ChatMessageDto> {
+        let all = self.chat_messages.read().await;
+        all.get(&guild_id)
+            .map(|q| q.iter().cloned().collect())
+            .unwrap_or_default()
     }
 
     fn get_session(&self, token: &str) -> Option<ActivitySession> {
@@ -80,6 +97,14 @@ impl ActivityState {
 // ─────────────────────────────────────────────
 // DTO 타입
 // ─────────────────────────────────────────────
+
+#[derive(Serialize, Clone)]
+pub struct ChatMessageDto {
+    pub user_id: String,
+    pub username: String,
+    pub content: String,
+    pub timestamp_ms: u64,
+}
 
 #[derive(Serialize)]
 pub struct PlayerDto {
@@ -120,6 +145,7 @@ pub struct GameStateDto {
     pub contractor_can_act: bool,       // 청부업자 청부 가능 여부
     pub contractor_targets: Vec<ContractorTargetDto>, // 청부 가능 대상 목록
     pub contractor_guess_roles: Vec<String>, // 추측 가능 직업 목록
+    pub chat_messages: Vec<ChatMessageDto>,  // 게임 채널 최근 메시지
 }
 
 #[derive(Deserialize)]
@@ -163,6 +189,12 @@ pub struct ActionResponse {
     pub message: Option<String>,
 }
 
+#[derive(Deserialize)]
+pub struct ChatSendRequest {
+    pub guild_id: String,
+    pub content: String,
+}
+
 // ─────────────────────────────────────────────
 // 라우터
 // ─────────────────────────────────────────────
@@ -178,6 +210,7 @@ pub fn activity_router(state: ActivityState, static_dir: Option<String>) -> Rout
         .route("/state", get(state_handler))
         .route("/action", post(action_handler))
         .route("/ws", get(ws_handler))
+        .route("/chat", post(chat_send_handler))
         .with_state(state);
 
     let mut router = Router::new().nest("/activity/api", api).layer(cors);
@@ -256,6 +289,16 @@ async fn auth_handler(
     // mock_code: 로컬 개발용 (DiscordSDKMock)
     if query.code == "mock_code" {
         println!("[auth] mock mode → returning dummy session_token");
+        state.sessions.insert(
+            "mock_session_token".to_string(),
+            ActivitySession {
+                user_id: 0,
+                username: "Mock User".to_string(),
+                guild_id,
+                expires_at: Instant::now() + Duration::from_secs(86400),
+                access_token: String::new(),
+            },
+        );
         return Json(serde_json::json!({
             "session_token": "mock_session_token",
             "user_id": "0",
@@ -324,6 +367,7 @@ async fn auth_handler(
             username: username.clone(),
             guild_id,
             expires_at: Instant::now() + Duration::from_secs(3600),
+            access_token: access_token.clone(),
         },
     );
 
@@ -366,10 +410,13 @@ async fn state_handler(
     };
 
     let guild_key = serenity::GuildId::new(guild_id);
+    let chat = state.get_chat(guild_id).await;
     let game_state = match state.games.get(&guild_key) {
         Some(running_arc) => {
             let mut running = running_arc.write().await;
-            build_game_state(&mut running, session.user_id)
+            let mut dto = build_game_state(&mut running, session.user_id);
+            dto.chat_messages = chat;
+            dto
         }
         None => GameStateDto {
             in_game: false,
@@ -393,6 +440,7 @@ async fn state_handler(
             contractor_can_act: false,
             contractor_targets: vec![],
             contractor_guess_roles: vec![],
+            chat_messages: chat,
         },
     };
 
@@ -550,10 +598,13 @@ async fn handle_ws(
     loop {
         tokio::select! {
             _ = interval.tick() => {
+                let chat = state.get_chat(guild_id).await;
                 let dto = match state.games.get(&guild_key) {
                     Some(arc) => {
                         let mut running = arc.write().await;
-                        build_game_state(&mut running, user_id)
+                        let mut dto = build_game_state(&mut running, user_id);
+                        dto.chat_messages = chat;
+                        dto
                     }
                     None => GameStateDto {
                         in_game: false,
@@ -577,6 +628,7 @@ async fn handle_ws(
                         contractor_can_act: false,
                         contractor_targets: vec![],
                         contractor_guess_roles: vec![],
+                        chat_messages: chat,
                     },
                 };
 
@@ -749,6 +801,67 @@ fn build_game_state(running: &mut RunningGame, user_id: u64) -> GameStateDto {
         contractor_can_act,
         contractor_targets,
         contractor_guess_roles,
+        chat_messages: vec![],  // 호출자에서 채운다
+    }
+}
+
+// ─────────────────────────────────────────────
+// 채팅 전송 (사용자 계정으로)
+// ─────────────────────────────────────────────
+
+async fn chat_send_handler(
+    State(state): State<ActivityState>,
+    headers: HeaderMap,
+    Json(body): Json<ChatSendRequest>,
+) -> impl IntoResponse {
+    let token = match extract_session_token(&headers) {
+        Some(t) => t,
+        None => return (StatusCode::UNAUTHORIZED, Json(serde_json::json!({"ok": false, "error": "missing token"}))).into_response(),
+    };
+    let session = match state.get_session(&token) {
+        Some(s) => s,
+        None => return (StatusCode::UNAUTHORIZED, Json(serde_json::json!({"ok": false, "error": "invalid session"}))).into_response(),
+    };
+
+    let guild_id: u64 = match body.guild_id.parse() {
+        Ok(id) => id,
+        Err(_) => return (StatusCode::BAD_REQUEST, Json(serde_json::json!({"ok": false, "error": "invalid guild_id"}))).into_response(),
+    };
+
+    if body.content.trim().is_empty() {
+        return (StatusCode::BAD_REQUEST, Json(serde_json::json!({"ok": false, "error": "empty content"}))).into_response();
+    }
+
+    // 게임 채널 ID 조회
+    let channel_id = {
+        let game_entry = match state.games.get(&serenity::GuildId::new(guild_id)) {
+            Some(g) => g,
+            None => return (StatusCode::BAD_REQUEST, Json(serde_json::json!({"ok": false, "error": "no active game"}))).into_response(),
+        };
+        let game = game_entry.read().await;
+        game.channel_id.get()
+    };
+
+    // 사용자 토큰으로 Discord API에 메시지 전송
+    let res = reqwest::Client::new()
+        .post(format!("https://discord.com/api/v10/channels/{channel_id}/messages"))
+        .header("Authorization", format!("Bearer {}", session.access_token))
+        .json(&serde_json::json!({ "content": body.content }))
+        .send()
+        .await;
+
+    match res {
+        Ok(r) if r.status().is_success() => {
+            Json(serde_json::json!({"ok": true})).into_response()
+        }
+        Ok(r) => {
+            let err: serde_json::Value = r.json().await.unwrap_or_default();
+            eprintln!("[chat] Discord API 전송 실패: {err}");
+            (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"ok": false, "error": err}))).into_response()
+        }
+        Err(e) => {
+            (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"ok": false, "error": e.to_string()}))).into_response()
+        }
     }
 }
 

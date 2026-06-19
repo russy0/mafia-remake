@@ -95,6 +95,7 @@ struct Data {
     web_sessions: Arc<DashMap<String, web_settings::WebSettingsSession>>,
     web_base_url: Arc<String>,
     bot_user_id: serenity::UserId,
+    activity_state: activity::ActivityState,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -240,9 +241,9 @@ async fn main() -> Result<()> {
 
     // Activity 서버를 Discord 연결 전에 즉시 시작 (Fly.io health check 통과용)
     let activity_port = std::env::var("ACTIVITY_PORT")
-        .unwrap_or_else(|_| "8802".to_string())
+        .unwrap_or_else(|_| "2053".to_string())
         .parse::<u16>()
-        .unwrap_or(8802);
+        .context("ACTIVITY_PORT는 1~65535 사이 숫자여야 합니다.")?;
     let activity_client_id = std::env::var("DISCORD_CLIENT_ID").unwrap_or_default();
     let activity_client_secret = std::env::var("DISCORD_CLIENT_SECRET").unwrap_or_default();
     let activity_static = std::env::var("ACTIVITY_STATIC_DIR").ok();
@@ -253,6 +254,7 @@ async fn main() -> Result<()> {
         activity_client_id,
         activity_client_secret,
     );
+    let activity_state_for_bot = activity_state.clone();
     let activity_host = web_host.clone();
     tokio::spawn(async move {
         activity::run_activity_server(activity_state, activity_host, activity_port, activity_static, activity_tls_cert, activity_tls_key).await;
@@ -322,6 +324,7 @@ async fn main() -> Result<()> {
                     web_sessions: web_sessions_setup.clone(),
                     web_base_url: Arc::new(web_base_url.clone()),
                     bot_user_id: ready.user.id,
+                    activity_state: activity_state_for_bot.clone(),
                 };
                 let web_state = web_settings::WebSettingsState {
                     config: config_setup,
@@ -341,6 +344,7 @@ async fn main() -> Result<()> {
                     }
                 });
 
+         
                 Ok(data)
             })
         })
@@ -352,3 +356,4 @@ async fn main() -> Result<()> {
     client.start().await?;
     Ok(())
 }
+

@@ -35,6 +35,7 @@ use secrecy::ExposeSecret;
 use std::collections::{HashMap, HashSet};
 use std::io::Cursor;
 use std::sync::Arc;
+use std::time::SystemTime;
 use std::time::{Duration, Instant};
 use tokio::sync::{Notify, RwLock};
 
@@ -4006,7 +4007,31 @@ pub async fn handle_message_event(
                 vec![],
             )
             .await;
-        }
+          }
+        return Ok(());
     }
+
+    // 게임 채널 메시지 → Activity 채팅 미러링
+    let is_game_channel = {
+        let running_read = running.read().await;
+        running_read.channel_id == message.channel_id
+    };
+    if is_game_channel {
+        let username = message.author.global_name.as_deref()
+            .unwrap_or(message.author.name.as_str())
+            .to_string();
+        let timestamp_ms = SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis() as u64;
+        let chat_msg = crate::activity::ChatMessageDto {
+            user_id: message.author.id.get().to_string(),
+            username,
+            content: message.content.clone(),
+            timestamp_ms,
+        };
+        data.activity_state.push_chat(guild_id.get(), chat_msg).await;
+    }
+
     Ok(())
 }

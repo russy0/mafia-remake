@@ -22,6 +22,13 @@ export interface ContractorTarget {
   name: string;
 }
 
+export interface ChatMessage {
+  user_id: string;
+  username: string;
+  content: string;
+  timestamp_ms: number;
+}
+
 export interface GameState {
   in_game: boolean;
   phase: Phase;
@@ -44,6 +51,7 @@ export interface GameState {
   contractor_can_act: boolean;
   contractor_targets: ContractorTarget[];
   contractor_guess_roles: string[];
+  chat_messages: ChatMessage[];
 }
 
 export type ActionType =
