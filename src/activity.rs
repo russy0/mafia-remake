@@ -23,7 +23,7 @@ use std::{
     collections::HashMap,
     path::Path,
     sync::Arc,
-    time::{Duration, Instant},
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 use tokio::sync::RwLock;
 use tower_http::{
@@ -782,11 +782,13 @@ fn build_game_state(running: &mut RunningGame, user_id: u64) -> GameStateDto {
         vec![]
     };
 
+    let phase_ends_at = phase_deadline_unix_ms(running.phase_deadline, game.phase);
+
     GameStateDto {
         in_game: true,
         phase: phase_str.to_string(),
         day_number: game.day_number,
-        phase_ends_at: None,
+        phase_ends_at,
         players,
         my_role,
         my_team,
@@ -804,6 +806,39 @@ fn build_game_state(running: &mut RunningGame, user_id: u64) -> GameStateDto {
         contractor_can_act,
         contractor_targets,
         contractor_guess_roles,
+    }
+}
+
+fn phase_deadline_unix_ms(deadline: Option<Instant>, phase: Phase) -> Option<u64> {
+    if matches!(phase, Phase::Ended) {
+        return None;
+    }
+    let remaining = deadline?.saturating_duration_since(Instant::now());
+    let deadline = SystemTime::now().checked_add(remaining)?;
+    let millis = deadline.duration_since(UNIX_EPOCH).ok()?.as_millis();
+    Some(millis.min(u128::from(u64::MAX)) as u64)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn active_phase_deadline_is_unix_ms() {
+        let deadline = Instant::now() + Duration::from_secs(30);
+        let millis = phase_deadline_unix_ms(Some(deadline), Phase::Night).unwrap();
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_millis() as u64;
+
+        assert!(millis >= now);
+    }
+
+    #[test]
+    fn ended_phase_has_no_deadline() {
+        let deadline = Instant::now() + Duration::from_secs(30);
+        assert_eq!(phase_deadline_unix_ms(Some(deadline), Phase::Ended), None);
     }
 }
 

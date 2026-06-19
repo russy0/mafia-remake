@@ -113,6 +113,7 @@ struct RunningGame {
     reveal_death_roles: bool,
     anonymous_enabled: bool,
     started_at: Instant,
+    phase_deadline: Option<Instant>,
     initial_roles: HashMap<u64, Role>,
     memos: HashMap<u64, HashMap<u64, Vec<String>>>,
     game_status_message_id: Option<serenity::MessageId>,

@@ -227,7 +227,7 @@ function TopBar({
 
       <div className="timer-block">
         <span className={remaining !== null && remaining <= 10 ? "timer danger" : "timer"}>
-          {remaining === null ? "--:--" : formatClock(remaining)}
+          {remaining === null ? "대기" : formatClock(remaining)}
         </span>
       </div>
 
