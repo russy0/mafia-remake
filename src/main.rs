@@ -212,16 +212,55 @@ async fn event_handler(
     Ok(())
 }
 
-async fn upsert_global_commands(
+fn preserve_entry_point_command(command: &serenity::Command) -> serenity::CreateCommand {
+    let mut builder = serenity::CreateCommand::new(command.name.clone())
+        .description(command.description.clone())
+        .kind(serenity::CommandType::PrimaryEntryPoint)
+        .handler(
+            command
+                .handler
+                .unwrap_or(serenity::EntryPointHandlerType::DiscordLaunchActivity),
+        )
+        .nsfw(command.nsfw);
+
+    if let Some(localizations) = &command.name_localizations {
+        for (locale, name) in localizations {
+            builder = builder.name_localized(locale, name);
+        }
+    }
+    if let Some(localizations) = &command.description_localizations {
+        for (locale, description) in localizations {
+            builder = builder.description_localized(locale, description);
+        }
+    }
+    if let Some(permissions) = command.default_member_permissions {
+        builder = builder.default_member_permissions(permissions);
+    }
+    if !command.integration_types.is_empty() {
+        builder = builder.integration_types(command.integration_types.clone());
+    }
+    if let Some(contexts) = &command.contexts {
+        builder = builder.contexts(contexts.clone());
+    }
+
+    builder
+}
+
+async fn register_global_commands_preserving_activity(
     ctx: &serenity::Context,
     commands: &[poise::Command<Data, Error>],
 ) -> serenity::Result<usize> {
-    let builders = poise::builtins::create_application_commands(commands);
-    let count = builders.len();
-    for builder in builders {
-        serenity::Command::create_global_command(ctx, builder).await?;
+    let mut builders = poise::builtins::create_application_commands(commands);
+    let slash_count = builders.len();
+
+    for command in serenity::Command::get_global_commands(ctx).await? {
+        if command.kind == serenity::CommandType::PrimaryEntryPoint {
+            builders.push(preserve_entry_point_command(&command));
+        }
     }
-    Ok(count)
+
+    serenity::Command::set_global_commands(ctx, builders).await?;
+    Ok(slash_count)
 }
 
 #[tokio::main]
@@ -319,7 +358,7 @@ async fn main() -> Result<()> {
         })
         .setup(move |ctx, ready, framework| {
             Box::pin(async move {
-                match upsert_global_commands(ctx, &framework.options().commands).await {
+                match register_global_commands_preserving_activity(ctx, &framework.options().commands).await {
                     Ok(count) => println!("Global commands registered: {count}"),
                     Err(e) => eprintln!("Global command registration warning: {e}"),
                 }
