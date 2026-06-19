@@ -2,9 +2,8 @@
 set -euo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-export CARGO_HOME="$repo_root/.cargo"
-export RUSTUP_HOME="$repo_root/.rustup"
-export PATH="$CARGO_HOME/bin:$PATH"
+source "$repo_root/scripts/common-linux.sh"
+MAFIA_SCCACHE_WARN=0 set_mafia_build_env "$repo_root"
 
 case "$(uname -m)" in
   x86_64 | amd64)
@@ -35,5 +34,6 @@ rustup toolchain install "$toolchain" --profile minimal
 rustup default "$toolchain"
 rustup target add "$linux_target" --toolchain "$toolchain"
 rustup component add clippy rustfmt --toolchain "$toolchain"
+install_mafia_sccache "$toolchain" "$repo_root"
 rustup run "$toolchain" rustc -V
 rustup run "$toolchain" cargo -V

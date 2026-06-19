@@ -7,7 +7,7 @@ use anyhow::{Context as AnyhowContext, Result};
 use mafia_remake::config;
 use mafia_remake::model::{Player, Role};
 use poise::serenity_prelude as serenity;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tokio::sync::RwLock;
 
@@ -254,10 +254,57 @@ pub async fn ack_component(ctx: &serenity::Context, component: &serenity::Compon
         .await;
 }
 
+fn has_workspace_marker(path: &Path) -> bool {
+    path.join(".env").is_file()
+        || path.join("config.json").is_file()
+        || path.join("Cargo.toml").is_file()
+}
+
+fn find_workspace_from(start: impl AsRef<Path>) -> Option<PathBuf> {
+    start
+        .as_ref()
+        .ancestors()
+        .find(|path| has_workspace_marker(path))
+        .map(Path::to_path_buf)
+}
+
+pub fn workspace_root() -> Result<PathBuf> {
+    if let Ok(root) = std::env::var("MAFIA_WORKDIR") {
+        let root = PathBuf::from(root);
+        if root.is_dir() {
+            return Ok(root);
+        }
+    }
+
+    if let Ok(current_dir) = std::env::current_dir()
+        && let Some(root) = find_workspace_from(current_dir)
+    {
+        return Ok(root);
+    }
+
+    if let Ok(exe_path) = std::env::current_exe()
+        && let Some(exe_dir) = exe_path.parent()
+        && let Some(root) = find_workspace_from(exe_dir)
+    {
+        return Ok(root);
+    }
+
+    std::env::current_dir().context("현재 작업 디렉터리를 확인하지 못했습니다.")
+}
+
+pub fn load_workspace_env() -> Result<PathBuf> {
+    let root = workspace_root()?;
+    let env_path = root.join(".env");
+    if env_path.is_file() {
+        dotenvy::from_path(&env_path)
+            .with_context(|| format!("{} 파일을 읽지 못했습니다.", env_path.display()))?;
+    }
+    Ok(root)
+}
+
+#[allow(dead_code)]
 pub fn workspace_path(file_name: &str) -> Result<PathBuf> {
-    Ok(std::env::current_dir()
-        .context("현재 작업 디렉터리를 확인하지 못했습니다.")?
-        .join(file_name))
+    Ok(workspace_root()?.join(file_name))
 }
 
 pub fn display_name(member: &serenity::Member) -> String {

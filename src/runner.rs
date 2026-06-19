@@ -345,6 +345,7 @@ pub async fn run_night(
         let config = data.config.read().await.clone();
         let mut running_write = running.write().await;
         running_write.game.phase = Phase::Night;
+        running_write.phase_deadline = Some(Instant::now() + Duration::from_secs(config.night_seconds));
         running_write.day_chat_open = false;
         running_write.final_defense_user_id = None;
         running_write.night_timed_events_due = config.night_seconds <= 10;
@@ -1200,6 +1201,8 @@ pub async fn run_day(
     let (guild_id, day_notify, discussion_seconds, hackers, vigilantes, psychologists) = {
         let mut running_write = running.write().await;
         running_write.game.phase = Phase::Day;
+        running_write.phase_deadline =
+            Some(Instant::now() + Duration::from_secs(config.discussion_seconds));
         running_write.day_chat_open = true;
         running_write.final_defense_user_id = None;
         running_write.day_skip_voter_ids.clear();
@@ -1369,6 +1372,8 @@ pub async fn run_day(
             running_write.day_extension_voter_ids.clear();
             running_write.day_extension_active = true;
             running_write.day_extension_confirmed = false;
+            running_write.phase_deadline =
+                Some(Instant::now() + Duration::from_secs(DAY_EXTENSION_VOTE_SECONDS));
             (alive_count, alive_count / 2 + 1)
         };
         let mut extension_message = send_game_embed(
@@ -1427,6 +1432,8 @@ pub async fn run_day(
         if extension_confirmed {
             extension_used = true;
             current_discussion_seconds = DISCUSSION_EXTENSION_SECONDS;
+            running.write().await.phase_deadline =
+                Some(Instant::now() + Duration::from_secs(DISCUSSION_EXTENSION_SECONDS));
             continue;
         }
         let _ = extension_message
@@ -1539,6 +1546,7 @@ pub async fn run_vote(
     let (guild_id, vote_notify, seconds, alive) = {
         let mut running_write = running.write().await;
         running_write.game.start_vote()?;
+        running_write.phase_deadline = Some(Instant::now() + Duration::from_secs(config.vote_seconds));
         running_write.day_chat_open = false;
         running_write.final_defense_user_id = None;
         (
@@ -1644,6 +1652,7 @@ pub async fn run_vote(
     {
         let mut running_write = running.write().await;
         running_write.final_defense_user_id = Some(nominee.user_id);
+        running_write.phase_deadline = Some(Instant::now() + Duration::from_secs(20));
     }
     sync_anonymous_general_chat_permissions(ctx, running).await;
     set_channel_slowmode(ctx, running, 0).await;
@@ -1687,6 +1696,8 @@ pub async fn run_vote(
     {
         let mut running_write = running.write().await;
         running_write.game.start_confirmation_vote()?;
+        running_write.phase_deadline =
+            Some(Instant::now() + Duration::from_secs(CONFIRM_VOTE_SECONDS));
         running_write.final_defense_user_id = None;
     }
     restore_member_game_channel_chat(ctx, running).await;
@@ -1928,4 +1939,3 @@ pub async fn announce_winner(
     .await?;
     Ok(true)
 }
-

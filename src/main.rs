@@ -114,6 +114,7 @@ struct RunningGame {
     reveal_death_roles: bool,
     anonymous_enabled: bool,
     started_at: Instant,
+    phase_deadline: Option<Instant>,
     initial_roles: HashMap<u64, Role>,
     memos: HashMap<u64, HashMap<u64, Vec<String>>>,
     game_status_message_id: Option<serenity::MessageId>,
@@ -213,14 +214,101 @@ async fn event_handler(
     Ok(())
 }
 
+fn preserve_entry_point_command(command: &serenity::Command) -> serenity::CreateCommand {
+    let mut builder = serenity::CreateCommand::new(command.name.clone())
+        .description(command.description.clone())
+        .kind(serenity::CommandType::PrimaryEntryPoint)
+        .handler(
+            command
+                .handler
+                .unwrap_or(serenity::EntryPointHandlerType::DiscordLaunchActivity),
+        )
+        .nsfw(command.nsfw);
+
+    if let Some(localizations) = &command.name_localizations {
+        for (locale, name) in localizations {
+            builder = builder.name_localized(locale, name);
+        }
+    }
+    if let Some(localizations) = &command.description_localizations {
+        for (locale, description) in localizations {
+            builder = builder.description_localized(locale, description);
+        }
+    }
+    if let Some(permissions) = command.default_member_permissions {
+        builder = builder.default_member_permissions(permissions);
+    }
+    if !command.integration_types.is_empty() {
+        builder = builder.integration_types(command.integration_types.clone());
+    }
+    if let Some(contexts) = &command.contexts {
+        builder = builder.contexts(contexts.clone());
+    }
+
+    builder
+}
+
+async fn register_global_commands_preserving_activity(
+    ctx: &serenity::Context,
+    commands: &[poise::Command<Data, Error>],
+) -> serenity::Result<usize> {
+    let mut builders = poise::builtins::create_application_commands(commands);
+    let slash_count = builders.len();
+
+    for command in serenity::Command::get_global_commands(ctx).await? {
+        if command.kind == serenity::CommandType::PrimaryEntryPoint {
+            builders.push(preserve_entry_point_command(&command));
+        }
+    }
+
+    serenity::Command::set_global_commands(ctx, builders).await?;
+    Ok(slash_count)
+}
+
+fn warn_cloudflare_https_port(base_url: Option<&str>) {
+    let Some(base_url) = base_url.map(str::trim) else {
+        return;
+    };
+    if !base_url.starts_with("https://") {
+        return;
+    }
+    let Some(port) = explicit_url_port(base_url) else {
+        return;
+    };
+    if matches!(port, 80 | 8080 | 8880 | 2052 | 2082 | 2086 | 2095) {
+        eprintln!(
+            "WEB_SETTINGS_BASE_URL uses https on port {port}; Cloudflare proxied HTTPS supports only 443, 2053, 2083, 2087, 2096, or 8443. Use 8443 for web settings when Activity uses 2053."
+        );
+    }
+}
+
+fn explicit_url_port(url: &str) -> Option<u16> {
+    let without_scheme = url.strip_prefix("https://").or_else(|| url.strip_prefix("http://"))?;
+    let authority = without_scheme.split('/').next().unwrap_or_default();
+    let (_, port) = authority.rsplit_once(':')?;
+    port.parse().ok()
+}
+
+#[cfg(test)]
+mod main_tests {
+    use super::*;
+
+    #[test]
+    fn extracts_explicit_web_url_port() {
+        assert_eq!(explicit_url_port("https://example.com:8443/web-settings"), Some(8443));
+        assert_eq!(explicit_url_port("https://example.com"), None);
+        assert_eq!(explicit_url_port("http://localhost:8880"), Some(8880));
+    }
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     let _ = rustls::crypto::ring::default_provider().install_default();
-    dotenvy::dotenv().ok();
+    let workspace_root = embed::load_workspace_env()?;
     let token =
         std::env::var("DISCORD_TOKEN").context(".env 파일에 DISCORD_TOKEN을 설정하세요.")?;
-    let config_path = embed::workspace_path("config.json")?;
-    let stats_path = embed::workspace_path("stats.json")?;
+    let config_path = workspace_root.join("config.json");
+    let stats_path = workspace_root.join("stats.json");
     let config = config::load_config(&config_path)?;
     let stats = stats::load_stats(&stats_path).unwrap_or_default();
     let web_host = std::env::var("WEB_SETTINGS_HOST").unwrap_or_else(|_| "0.0.0.0".to_string());
@@ -228,7 +316,22 @@ async fn main() -> Result<()> {
         .unwrap_or_else(|_| "8800".to_string())
         .parse::<u16>()
         .context("WEB_SETTINGS_PORT는 1~65535 사이 숫자여야 합니다.")?;
-    let web_base_url = web_settings::base_url(&web_host, web_port);
+    let web_settings_base_url = std::env::var("WEB_SETTINGS_BASE_URL").ok();
+    warn_cloudflare_https_port(web_settings_base_url.as_deref());
+    let web_base_url_https = web_settings_base_url
+        .as_deref()
+        .is_some_and(|url| url.trim_start().starts_with("https://"));
+    let explicit_web_tls_cert = std::env::var("WEB_SETTINGS_TLS_CERT").ok();
+    let explicit_web_tls_key = std::env::var("WEB_SETTINGS_TLS_KEY").ok();
+    let web_tls_cert = explicit_web_tls_cert
+        .or_else(|| web_base_url_https.then(|| std::env::var("ACTIVITY_TLS_CERT").ok()).flatten());
+    let web_tls_key = explicit_web_tls_key
+        .or_else(|| web_base_url_https.then(|| std::env::var("ACTIVITY_TLS_KEY").ok()).flatten());
+    let web_tls_enabled = web_tls_cert.is_some() && web_tls_key.is_some();
+    if web_base_url_https && !web_tls_enabled {
+        eprintln!("WEB_SETTINGS_BASE_URL uses https but web settings TLS cert/key are missing.");
+    }
+    let web_base_url = web_settings::base_url(&web_host, web_port, web_tls_enabled);
 
     // 공유 상태를 Discord 연결 전에 먼저 생성
     let games: Arc<DashMap<serenity::GuildId, Arc<RwLock<RunningGame>>>> = Arc::new(DashMap::new());
@@ -309,9 +412,9 @@ async fn main() -> Result<()> {
         })
         .setup(move |ctx, ready, framework| {
             Box::pin(async move {
-                // Entry Point 커맨드(Activity용)가 있으면 bulk 등록이 실패하므로 에러 무시
-                if let Err(e) = poise::builtins::register_globally(ctx, &framework.options().commands).await {
-                    eprintln!("커맨드 등록 경고 (무시됨): {e}");
+                match register_global_commands_preserving_activity(ctx, &framework.options().commands).await {
+                    Ok(count) => println!("Global commands registered: {count}"),
+                    Err(e) => eprintln!("Global command registration warning: {e}"),
                 }
                 println!("Rust Mafia bot ready: {}", ready.user.name);
                 let data = Data {
@@ -339,7 +442,7 @@ async fn main() -> Result<()> {
                 };
                 let host = web_host.clone();
                 tokio::spawn(async move {
-                    if let Err(error) = web_settings::run_server(web_state, host, web_port).await {
+                    if let Err(error) = web_settings::run_server(web_state, host, web_port, web_tls_cert, web_tls_key).await {
                         eprintln!("Rust web settings server error: {error:?}");
                     }
                 });

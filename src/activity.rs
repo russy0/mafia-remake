@@ -4,12 +4,13 @@
 use crate::RunningGame;
 use anyhow::Result;
 use axum::{
+    body::Body,
     Router,
     extract::{
         Query, State,
         ws::{Message, WebSocket, WebSocketUpgrade},
     },
-    http::{HeaderMap, Method, StatusCode},
+    http::{HeaderMap, Method, StatusCode, Uri, header},
     response::{IntoResponse, Response},
     routing::{get, post},
     Json,
@@ -19,7 +20,8 @@ use mafia_remake::model::{Phase, Role};
 use poise::serenity_prelude as serenity;
 use serde::{Deserialize, Serialize};
 use std::{
-    collections::{HashMap, VecDeque},
+    collections::HashMap,
+    path::Path,
     sync::Arc,
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
@@ -29,6 +31,8 @@ use tower_http::{
     services::ServeDir,
 };
 use uuid::Uuid;
+
+include!(concat!(env!("OUT_DIR"), "/activity_static.rs"));
 
 // ─────────────────────────────────────────────
 // 공유 상태
@@ -40,16 +44,16 @@ pub struct ActivityState {
     pub sessions: Arc<DashMap<String, ActivitySession>>,
     pub client_id: String,
     pub client_secret: String,
-    pub chat_messages: Arc<tokio::sync::RwLock<HashMap<u64, VecDeque<ChatMessageDto>>>>,
 }
 
 #[derive(Clone)]
 pub struct ActivitySession {
     pub user_id: u64,
+    #[allow(dead_code)]
     pub username: String,
+    #[allow(dead_code)]
     pub guild_id: u64,
     pub expires_at: Instant,
-    pub access_token: String,
 }
 
 impl ActivityState {
@@ -63,24 +67,7 @@ impl ActivityState {
             sessions: Arc::new(DashMap::new()),
             client_id,
             client_secret,
-            chat_messages: Arc::new(tokio::sync::RwLock::new(HashMap::new())),
         }
-    }
-
-    pub async fn push_chat(&self, guild_id: u64, msg: ChatMessageDto) {
-        let mut all = self.chat_messages.write().await;
-        let queue = all.entry(guild_id).or_insert_with(VecDeque::new);
-        queue.push_back(msg);
-        if queue.len() > 100 {
-            queue.pop_front();
-        }
-    }
-
-    pub async fn get_chat(&self, guild_id: u64) -> Vec<ChatMessageDto> {
-        let all = self.chat_messages.read().await;
-        all.get(&guild_id)
-            .map(|q| q.iter().cloned().collect())
-            .unwrap_or_default()
     }
 
     fn get_session(&self, token: &str) -> Option<ActivitySession> {
@@ -97,14 +84,6 @@ impl ActivityState {
 // ─────────────────────────────────────────────
 // DTO 타입
 // ─────────────────────────────────────────────
-
-#[derive(Serialize, Clone)]
-pub struct ChatMessageDto {
-    pub user_id: String,
-    pub username: String,
-    pub content: String,
-    pub timestamp_ms: u64,
-}
 
 #[derive(Serialize)]
 pub struct PlayerDto {
@@ -145,7 +124,6 @@ pub struct GameStateDto {
     pub contractor_can_act: bool,       // 청부업자 청부 가능 여부
     pub contractor_targets: Vec<ContractorTargetDto>, // 청부 가능 대상 목록
     pub contractor_guess_roles: Vec<String>, // 추측 가능 직업 목록
-    pub chat_messages: Vec<ChatMessageDto>,  // 게임 채널 최근 메시지
 }
 
 #[derive(Deserialize)]
@@ -189,12 +167,6 @@ pub struct ActionResponse {
     pub message: Option<String>,
 }
 
-#[derive(Deserialize)]
-pub struct ChatSendRequest {
-    pub guild_id: String,
-    pub content: String,
-}
-
 // ─────────────────────────────────────────────
 // 라우터
 // ─────────────────────────────────────────────
@@ -206,20 +178,70 @@ pub fn activity_router(state: ActivityState, static_dir: Option<String>) -> Rout
         .allow_headers(Any);
 
     let api = Router::new()
+        .route("/client-config", get(client_config_handler))
         .route("/auth", get(auth_handler))
         .route("/state", get(state_handler))
         .route("/action", post(action_handler))
         .route("/ws", get(ws_handler))
-        .route("/chat", post(chat_send_handler))
         .with_state(state);
 
-    let mut router = Router::new().nest("/activity/api", api).layer(cors);
+    let mut router = Router::new()
+        .nest("/activity/api", api)
+        .fallback(embedded_activity_asset)
+        .layer(cors);
 
     if let Some(dir) = static_dir {
-        router = router.fallback_service(ServeDir::new(dir));
+        if Path::new(&dir).join("index.html").is_file() {
+            router = router.fallback_service(ServeDir::new(dir));
+        } else {
+            println!("Embedded Activity UI active.");
+        }
     }
 
     router
+}
+
+async fn embedded_activity_asset(uri: Uri) -> Response {
+    let request_path = uri.path();
+    let path = match request_path {
+        "/" | "" => "/index.html",
+        path => path,
+    };
+
+    if let Some(asset) = ACTIVITY_ASSETS.iter().find(|asset| asset.path == path) {
+        return embedded_response(asset);
+    }
+
+    if request_path.starts_with("/activity/api") || request_path.starts_with("/activity/ws") {
+        return StatusCode::NOT_FOUND.into_response();
+    }
+
+    ACTIVITY_ASSETS
+        .iter()
+        .find(|asset| asset.path == "/index.html")
+        .map(embedded_response)
+        .unwrap_or_else(|| StatusCode::NOT_FOUND.into_response())
+}
+
+fn embedded_response(asset: &EmbeddedActivityAsset) -> Response {
+    Response::builder()
+        .status(StatusCode::OK)
+        .header(header::CONTENT_TYPE, asset.content_type)
+        .header(header::CACHE_CONTROL, cache_control(asset.path))
+        .body(Body::from(asset.body.to_vec()))
+        .unwrap_or_else(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response())
+}
+
+fn cache_control(path: &str) -> &'static str {
+    if path == "/index.html" {
+        "no-cache"
+    } else {
+        "public, max-age=31536000, immutable"
+    }
+}
+
+async fn client_config_handler(State(state): State<ActivityState>) -> impl IntoResponse {
+    Json(serde_json::json!({ "client_id": state.client_id }))
 }
 
 pub async fn run_activity_server(
@@ -289,16 +311,6 @@ async fn auth_handler(
     // mock_code: 로컬 개발용 (DiscordSDKMock)
     if query.code == "mock_code" {
         println!("[auth] mock mode → returning dummy session_token");
-        state.sessions.insert(
-            "mock_session_token".to_string(),
-            ActivitySession {
-                user_id: 0,
-                username: "Mock User".to_string(),
-                guild_id,
-                expires_at: Instant::now() + Duration::from_secs(86400),
-                access_token: String::new(),
-            },
-        );
         return Json(serde_json::json!({
             "session_token": "mock_session_token",
             "user_id": "0",
@@ -367,7 +379,6 @@ async fn auth_handler(
             username: username.clone(),
             guild_id,
             expires_at: Instant::now() + Duration::from_secs(3600),
-            access_token: access_token.clone(),
         },
     );
 
@@ -410,13 +421,10 @@ async fn state_handler(
     };
 
     let guild_key = serenity::GuildId::new(guild_id);
-    let chat = state.get_chat(guild_id).await;
     let game_state = match state.games.get(&guild_key) {
         Some(running_arc) => {
             let mut running = running_arc.write().await;
-            let mut dto = build_game_state(&mut running, session.user_id);
-            dto.chat_messages = chat;
-            dto
+            build_game_state(&mut running, session.user_id)
         }
         None => GameStateDto {
             in_game: false,
@@ -440,7 +448,6 @@ async fn state_handler(
             contractor_can_act: false,
             contractor_targets: vec![],
             contractor_guess_roles: vec![],
-            chat_messages: chat,
         },
     };
 
@@ -598,13 +605,10 @@ async fn handle_ws(
     loop {
         tokio::select! {
             _ = interval.tick() => {
-                let chat = state.get_chat(guild_id).await;
                 let dto = match state.games.get(&guild_key) {
                     Some(arc) => {
                         let mut running = arc.write().await;
-                        let mut dto = build_game_state(&mut running, user_id);
-                        dto.chat_messages = chat;
-                        dto
+                        build_game_state(&mut running, user_id)
                     }
                     None => GameStateDto {
                         in_game: false,
@@ -628,7 +632,6 @@ async fn handle_ws(
                         contractor_can_act: false,
                         contractor_targets: vec![],
                         contractor_guess_roles: vec![],
-                        chat_messages: chat,
                     },
                 };
 
@@ -779,11 +782,13 @@ fn build_game_state(running: &mut RunningGame, user_id: u64) -> GameStateDto {
         vec![]
     };
 
+    let phase_ends_at = phase_deadline_unix_ms(running.phase_deadline, game.phase);
+
     GameStateDto {
         in_game: true,
         phase: phase_str.to_string(),
         day_number: game.day_number,
-        phase_ends_at: None,
+        phase_ends_at,
         players,
         my_role,
         my_team,
@@ -801,67 +806,39 @@ fn build_game_state(running: &mut RunningGame, user_id: u64) -> GameStateDto {
         contractor_can_act,
         contractor_targets,
         contractor_guess_roles,
-        chat_messages: vec![],  // 호출자에서 채운다
     }
 }
 
-// ─────────────────────────────────────────────
-// 채팅 전송 (사용자 계정으로)
-// ─────────────────────────────────────────────
+fn phase_deadline_unix_ms(deadline: Option<Instant>, phase: Phase) -> Option<u64> {
+    if matches!(phase, Phase::Ended) {
+        return None;
+    }
+    let remaining = deadline?.saturating_duration_since(Instant::now());
+    let deadline = SystemTime::now().checked_add(remaining)?;
+    let millis = deadline.duration_since(UNIX_EPOCH).ok()?.as_millis();
+    Some(millis.min(u128::from(u64::MAX)) as u64)
+}
 
-async fn chat_send_handler(
-    State(state): State<ActivityState>,
-    headers: HeaderMap,
-    Json(body): Json<ChatSendRequest>,
-) -> impl IntoResponse {
-    let token = match extract_session_token(&headers) {
-        Some(t) => t,
-        None => return (StatusCode::UNAUTHORIZED, Json(serde_json::json!({"ok": false, "error": "missing token"}))).into_response(),
-    };
-    let session = match state.get_session(&token) {
-        Some(s) => s,
-        None => return (StatusCode::UNAUTHORIZED, Json(serde_json::json!({"ok": false, "error": "invalid session"}))).into_response(),
-    };
+#[cfg(test)]
+mod tests {
+    use super::*;
 
-    let guild_id: u64 = match body.guild_id.parse() {
-        Ok(id) => id,
-        Err(_) => return (StatusCode::BAD_REQUEST, Json(serde_json::json!({"ok": false, "error": "invalid guild_id"}))).into_response(),
-    };
+    #[test]
+    fn active_phase_deadline_is_unix_ms() {
+        let deadline = Instant::now() + Duration::from_secs(30);
+        let millis = phase_deadline_unix_ms(Some(deadline), Phase::Night).unwrap();
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_millis() as u64;
 
-    if body.content.trim().is_empty() {
-        return (StatusCode::BAD_REQUEST, Json(serde_json::json!({"ok": false, "error": "empty content"}))).into_response();
+        assert!(millis >= now);
     }
 
-    // 게임 채널 ID 조회
-    let channel_id = {
-        let game_entry = match state.games.get(&serenity::GuildId::new(guild_id)) {
-            Some(g) => g,
-            None => return (StatusCode::BAD_REQUEST, Json(serde_json::json!({"ok": false, "error": "no active game"}))).into_response(),
-        };
-        let game = game_entry.read().await;
-        game.channel_id.get()
-    };
-
-    // 사용자 토큰으로 Discord API에 메시지 전송
-    let res = reqwest::Client::new()
-        .post(format!("https://discord.com/api/v10/channels/{channel_id}/messages"))
-        .header("Authorization", format!("Bearer {}", session.access_token))
-        .json(&serde_json::json!({ "content": body.content }))
-        .send()
-        .await;
-
-    match res {
-        Ok(r) if r.status().is_success() => {
-            Json(serde_json::json!({"ok": true})).into_response()
-        }
-        Ok(r) => {
-            let err: serde_json::Value = r.json().await.unwrap_or_default();
-            eprintln!("[chat] Discord API 전송 실패: {err}");
-            (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"ok": false, "error": err}))).into_response()
-        }
-        Err(e) => {
-            (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"ok": false, "error": e.to_string()}))).into_response()
-        }
+    #[test]
+    fn ended_phase_has_no_deadline() {
+        let deadline = Instant::now() + Duration::from_secs(30);
+        assert_eq!(phase_deadline_unix_ms(Some(deadline), Phase::Ended), None);
     }
 }
 

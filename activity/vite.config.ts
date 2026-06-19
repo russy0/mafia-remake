@@ -9,11 +9,11 @@ export default defineConfig({
     port: 5173,
     proxy: {
       "/activity/api": {
-        target: "http://localhost:8802",
+        target: "http://localhost:2053",
         changeOrigin: true,
       },
       "/activity/ws": {
-        target: "ws://localhost:8802",
+        target: "ws://localhost:2053",
         ws: true,
         changeOrigin: true,
       },
@@ -22,6 +22,6 @@ export default defineConfig({
   build: {
     outDir: "dist",
   },
-  // Discord proxy는 /.proxy/ prefix를 붙이므로 base는 /로 유지
-  base: "/",
+  // Keep assets relative so Discord URL mappings and direct HTTPS both work.
+  base: "./",
 });

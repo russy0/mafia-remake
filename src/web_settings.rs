@@ -1,5 +1,5 @@
 use crate::{Recruitment, RunningGame};
-use anyhow::{Result, bail};
+use anyhow::{Context, Result, bail};
 use dashmap::DashMap;
 use mafia_remake::config::{self, BotConfig};
 use mafia_remake::model::{
@@ -8,15 +8,19 @@ use mafia_remake::model::{
 use mafia_remake::stats::{self, StatsFile};
 use poise::serenity_prelude as serenity;
 use rand::RngCore;
+use rustls::ServerConfig;
 use serde_json::{Value, json};
 use std::collections::HashMap;
 use std::fmt::Write as FmtWrite;
+use std::fs::File;
+use std::io::BufReader;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::net::{TcpListener, TcpStream};
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
+use tokio::net::TcpListener;
 use tokio::sync::RwLock;
+use tokio_rustls::TlsAcceptor;
 
 const WEB_SETTINGS_PATH: &str = "/web-settings";
 const WEB_SETTINGS_SESSION_TTL_SECONDS: u64 = 600;
@@ -316,7 +320,7 @@ pub fn session_ttl_minutes() -> u64 {
     (WEB_SETTINGS_SESSION_TTL_SECONDS / 60).max(1)
 }
 
-pub fn base_url(host: &str, port: u16) -> String {
+pub fn base_url(host: &str, port: u16, use_https: bool) -> String {
     if let Ok(base_url) = std::env::var("WEB_SETTINGS_BASE_URL")
         && !base_url.trim().is_empty()
     {
@@ -327,7 +331,8 @@ pub fn base_url(host: &str, port: u16) -> String {
     } else {
         host
     };
-    format!("http://{display_host}:{port}")
+    let scheme = if use_https { "https" } else { "http" };
+    format!("{scheme}://{display_host}:{port}")
 }
 
 pub fn issue_session(
@@ -355,9 +360,36 @@ pub fn issue_session(
     token
 }
 
-pub async fn run_server(state: WebSettingsState, host: String, port: u16) -> Result<()> {
+pub async fn run_server(
+    state: WebSettingsState,
+    host: String,
+    port: u16,
+    tls_cert: Option<String>,
+    tls_key: Option<String>,
+) -> Result<()> {
     let listener = TcpListener::bind((host.as_str(), port)).await?;
-    println!("Rust web settings server ready: {host}:{port}");
+    if let (Some(cert), Some(key)) = (tls_cert, tls_key) {
+        let tls_config = Arc::new(load_tls_config(&cert, &key)?);
+        let acceptor = TlsAcceptor::from(tls_config);
+        println!("Rust web settings server ready (HTTPS): https://{host}:{port}");
+        loop {
+            let (stream, _addr) = listener.accept().await?;
+            let state = state.clone();
+            let acceptor = acceptor.clone();
+            tokio::spawn(async move {
+                match acceptor.accept(stream).await {
+                    Ok(stream) => {
+                        if let Err(error) = handle_connection(stream, state).await {
+                            eprintln!("web settings error: {error:?}");
+                        }
+                    }
+                    Err(error) => eprintln!("web settings tls error: {error:?}"),
+                }
+            });
+        }
+    }
+
+    println!("Rust web settings server ready (HTTP): http://{host}:{port}");
     loop {
         let (stream, _addr) = listener.accept().await?;
         let state = state.clone();
@@ -369,7 +401,34 @@ pub async fn run_server(state: WebSettingsState, host: String, port: u16) -> Res
     }
 }
 
-async fn handle_connection(mut stream: TcpStream, state: WebSettingsState) -> Result<()> {
+fn load_tls_config(cert_path: &str, key_path: &str) -> Result<ServerConfig> {
+    let mut cert_reader = BufReader::new(
+        File::open(cert_path).with_context(|| format!("failed to open TLS cert: {cert_path}"))?,
+    );
+    let certs = rustls_pemfile::certs(&mut cert_reader)
+        .collect::<std::result::Result<Vec<_>, _>>()
+        .with_context(|| format!("failed to read TLS cert: {cert_path}"))?;
+    if certs.is_empty() {
+        bail!("TLS cert file has no certificates: {cert_path}");
+    }
+
+    let mut key_reader = BufReader::new(
+        File::open(key_path).with_context(|| format!("failed to open TLS key: {key_path}"))?,
+    );
+    let key = rustls_pemfile::private_key(&mut key_reader)
+        .with_context(|| format!("failed to read TLS key: {key_path}"))?
+        .with_context(|| format!("TLS key file has no private key: {key_path}"))?;
+
+    ServerConfig::builder()
+        .with_no_client_auth()
+        .with_single_cert(certs, key)
+        .context("failed to build web settings TLS config")
+}
+
+async fn handle_connection<S>(mut stream: S, state: WebSettingsState) -> Result<()>
+where
+    S: AsyncRead + AsyncWrite + Unpin,
+{
     let response = match read_http_request(&mut stream).await {
         Ok(request) => route_request(&state, request).await,
         Err(error) => http_response(
@@ -1480,7 +1539,10 @@ struct HttpRequest {
     body: String,
 }
 
-async fn read_http_request(stream: &mut TcpStream) -> Result<HttpRequest> {
+async fn read_http_request<S>(stream: &mut S) -> Result<HttpRequest>
+where
+    S: AsyncRead + Unpin,
+{
     let mut buffer = Vec::with_capacity(8192);
     let mut temp = [0u8; 4096];
     let mut header_end = None;
